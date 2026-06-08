@@ -121,7 +121,14 @@ func (p *PooledSource) Stat(ctx context.Context, messageID string) error {
 	}
 	err = session.Stat(ctx, messageID)
 	if err != nil {
-		p.discard(session)
+		// ErrArticleMissing (430) means the article doesn't exist but the
+		// connection itself is still valid — release rather than discard so we
+		// don't create a new TCP+TLS handshake for every missing segment.
+		if errors.Is(err, ErrArticleMissing) {
+			p.release(session)
+		} else {
+			p.discard(session)
+		}
 		return err
 	}
 	p.release(session)
