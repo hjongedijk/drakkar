@@ -709,7 +709,7 @@ func (db *DB) ResetStuckQueueItems(ctx context.Context) (int, error) {
 			state = $1,
 			failure_reason = 'interrupted_by_restart',
 			updated_at = now()
-		WHERE state IN ($2, $3, $4, $5, $6, $7)
+		WHERE state IN ($2, $3, $4, $5, $6, $7, $8)
 		  AND state != $1`,
 		QueueFailed,
 		QueueFetchingNZB, QueueIndexing, QueuePublishing,
