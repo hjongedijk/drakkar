@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hjongedijk/drakkar/internal/api"
@@ -285,12 +284,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		return publicationSvc.PublishSelectedRelease(ctx, *item.SelectedRelease)
 	}
 
-	// Preflight checker — mirrors nzbdav's FetchFirstSegmentsStep.
-	// For each file in the NZB, STAT-check the first segment to verify it
-	// exists on the NNTP server before publishing. If >20% of files are
-	// missing we fall back to the next search candidate.
+	// Preflight checker — quick article existence check before publishing.
+	// Samples up to 3 files (first, middle, last) from the NZB. If any are
+	// confirmed missing (430) the release is skipped. Checks run sequentially
+	// using a single NNTP connection to avoid hammering the provider.
 	if len(pooledSources) > 0 {
-		pool := pooledSources[0] // use primary provider for preflight
+		pool := pooledSources[0]
 		workflowSvc.SetPreflightChecker(func(ctx context.Context, item database.QueueSnapshot) error {
 			if item.NZBDocumentID == nil {
 				return nil
@@ -301,9 +300,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 				        ORDER BY ns.segment_number LIMIT 1)
 				FROM nzb_files nf
 				WHERE nf.nzb_document_id = $1
-				  AND nf.file_size_bytes > 0`, *item.NZBDocumentID)
+				  AND nf.file_size_bytes > 0
+				ORDER BY nf.id`, *item.NZBDocumentID)
 			if err != nil {
-				return nil // DB error: skip preflight rather than block publication
+				return nil
 			}
 			defer rows.Close()
 			var msgIDs []string
@@ -316,45 +316,22 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			if len(msgIDs) == 0 {
 				return nil
 			}
-			// Check first segments concurrently (bounded to 8 goroutines).
-			type result struct{ missing bool }
-			results := make([]result, len(msgIDs))
-			sem := make(chan struct{}, 8)
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				ch := make(chan int, len(msgIDs))
-				for i := range msgIDs {
-					ch <- i
-				}
-				close(ch)
-				var wg sync.WaitGroup
-				for range 8 {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						for i := range ch {
-							sem <- struct{}{}
-							err := pool.Stat(ctx, msgIDs[i])
-							<-sem
-							if errors.Is(err, nntp.ErrArticleMissing) {
-								results[i] = result{missing: true}
-							}
-						}
-					}()
-				}
-				wg.Wait()
-			}()
-			<-done
-			var missing int
-			for _, r := range results {
-				if r.missing {
-					missing++
-				}
+			// Sample first, middle, last — 3 checks max regardless of NZB size.
+			sample := []string{msgIDs[0]}
+			if mid := len(msgIDs) / 2; mid > 0 {
+				sample = append(sample, msgIDs[mid])
 			}
-			// Fail if >20% of files have missing first segments.
-			if missing*5 > len(msgIDs) {
-				return fmt.Errorf("preflight_failed: %d/%d files missing first segment", missing, len(msgIDs))
+			if last := len(msgIDs) - 1; last > 0 && last != len(msgIDs)/2 {
+				sample = append(sample, msgIDs[last])
+			}
+			// Check sequentially on a single connection — fast (3 round-trips)
+			// and doesn't interfere with the NNTP pool.
+			statCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			for _, msgID := range sample {
+				if err := pool.Stat(statCtx, msgID); errors.Is(err, nntp.ErrArticleMissing) {
+					return fmt.Errorf("preflight_failed: article missing %s", msgID)
+				}
 			}
 			return nil
 		})
