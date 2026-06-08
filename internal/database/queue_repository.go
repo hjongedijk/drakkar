@@ -713,7 +713,7 @@ func (db *DB) ResetStuckQueueItems(ctx context.Context) (int, error) {
 		  AND state != $1`,
 		QueueFailed,
 		QueueFetchingNZB, QueueIndexing, QueuePublishing,
-		QueuePreflight, QueueSearching, QueueRanking,
+		QueuePreflight, QueueSearching, QueueRanking, QueueSelected,
 	)
 	if err != nil {
 		return 0, err

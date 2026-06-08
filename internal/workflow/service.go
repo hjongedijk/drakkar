@@ -91,6 +91,12 @@ type Service struct {
 	profileCacheMu  sync.Mutex
 	profileCacheAt  time.Time
 	profileCachedPrefs ranking.Preferences
+
+	// importSem limits fetchAndImportSelectedRelease to 1 concurrent execution.
+	// Like nzbdav's SemaphoreSlim(1,1): parallel searching is fine, but only one
+	// NZB may go through preflight + publish at a time to avoid exhausting the
+	// NNTP connection pool.
+	importSem chan struct{}
 }
 
 type QueuePolicyProvider interface {
@@ -165,6 +171,7 @@ func NewService(repo Repository, seerr SeerrClient, hydra HydraClient) *Service 
 		hydra:     hydra,
 		fetcher:   HTTPNZBFetcher{},
 		WorkQueue: NewWorkQueue(2), // 2 concurrent searches: enough throughput while avoiding DB write deadlocks
+		importSem: make(chan struct{}, 1), // 1 concurrent import/preflight/publish (nzbdav parity)
 	}
 }
 
@@ -812,6 +819,15 @@ func isRetryableSearchFailure(err error) bool {
 }
 
 func (s *Service) fetchAndImportSelectedRelease(ctx context.Context, selectedReleaseID int64) (*int64, error) {
+	// Acquire the import semaphore — only 1 NZB may go through
+	// preflight + publish at a time (nzbdav SemaphoreSlim(1,1) parity).
+	// This prevents multiple concurrent items from draining the NNTP pool.
+	select {
+	case s.importSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-s.importSem }()
 	return s.fetchAndImportSelectedReleaseDepth(ctx, selectedReleaseID, 0)
 }
 
