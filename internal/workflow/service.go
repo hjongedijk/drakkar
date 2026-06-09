@@ -1164,7 +1164,7 @@ func (s *Service) promoteNextAfterFailure(ctx context.Context, current database.
 // Radarr/Sonarr never recurse here — they let the scheduler re-try later.
 // We cap at 5 hops so we can try a few alternatives without stack-overflowing.
 func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current database.ReleaseSummary, reason string, depth int) (*int64, error) {
-	if depth >= 5 {
+	if depth >= 2 {
 		// Safety valve: stop recursing and leave the item failed.
 		// The next scheduler cycle will pick it up with a fresh search.
 		return nil, nil
@@ -1696,7 +1696,7 @@ func (f HTTPNZBFetcher) Fetch(ctx context.Context, rawURL string) (string, []byt
 
 	client := f.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
