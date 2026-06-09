@@ -8,16 +8,13 @@ services:
     environment:
       DRAKKAR_SETTINGS_PATH: /app/data/settings.json
       DRAKKAR_HTTP_ADDR: :8080
+      DRAKKAR_VFS_BASE_URL: http://drakkar:8080
     volumes:
       - ./data/settings.json:/app/data/settings.json:ro
       - ./data/logs:/app/data/logs
-      - /mnt/drakkar:/mnt/drakkar:rshared
-    devices:
-      - /dev/fuse:/dev/fuse
-    cap_add:
-      - SYS_ADMIN
-    security_opt:
-      - apparmor:unconfined
+      - /mnt/drakkar/media:/mnt/drakkar/media
+      - /mnt/drakkar/cache:/mnt/drakkar/cache
+      - /mnt/drakkar/staging:/mnt/drakkar/staging
     ports:
       - "8080:8080"
     depends_on:

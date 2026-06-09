@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
 const (
 	DefaultSettingsPath         = "/app/data/settings.json"
-	DefaultFuseMountPath        = "/mnt/drakkar/vfs"
+	DefaultVFSBaseURL           = "http://localhost:8080"
 	DefaultMovieLibraryPath     = "/mnt/drakkar/media/movies"
 	DefaultTVLibraryPath        = "/mnt/drakkar/media/tv"
 	DefaultBlockCachePath       = "/mnt/drakkar/cache/blocks"
@@ -116,7 +115,7 @@ type SubtitleAuth struct {
 type Runtime struct {
 	SettingsPath           string
 	HTTPAddress            string
-	FuseMountPath          string
+	VFSBaseURL             string // Base URL for the HTTP VFS server, e.g. http://drakkar:8080
 	MovieLibraryPath       string
 	TVLibraryPath          string
 	BlockCachePath         string
@@ -136,7 +135,7 @@ func DefaultRuntime() Runtime {
 	return Runtime{
 		SettingsPath:           DefaultSettingsPath,
 		HTTPAddress:            DefaultHTTPAddress,
-		FuseMountPath:          DefaultFuseMountPath,
+		VFSBaseURL:             DefaultVFSBaseURL,
 		MovieLibraryPath:       DefaultMovieLibraryPath,
 		TVLibraryPath:          DefaultTVLibraryPath,
 		BlockCachePath:         DefaultBlockCachePath,
@@ -257,35 +256,6 @@ func validateURL(name, raw string) error {
 }
 
 func ValidatePaths(rt Runtime) error {
-	abs := func(path string) string {
-		out, err := filepath.Abs(path)
-		if err != nil {
-			return path
-		}
-		return filepath.Clean(out)
-	}
-
-	fuseRoot := abs(rt.FuseMountPath)
-	checks := []string{
-		rt.MovieLibraryPath,
-		rt.TVLibraryPath,
-		rt.BlockCachePath,
-		rt.HeaderCachePath,
-		rt.RepairWorkspacePath,
-		rt.StagingNZBPath,
-		rt.FailedDiagnosticsPath,
-	}
-
-	for _, target := range checks {
-		clean := abs(target)
-		if clean == fuseRoot || strings.HasPrefix(clean, fuseRoot+string(os.PathSeparator)) {
-			return fmt.Errorf("path %s must remain outside fuse mount %s", clean, fuseRoot)
-		}
-	}
-
-	if !strings.HasPrefix(abs(rt.MovieLibraryPath), filepath.Dir(filepath.Dir(fuseRoot))+string(os.PathSeparator)) {
-		return fmt.Errorf("movie library path %s must live under /mnt/drakkar", rt.MovieLibraryPath)
-	}
 	return nil
 }
 

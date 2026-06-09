@@ -16,7 +16,6 @@ import (
 	"github.com/hjongedijk/drakkar/internal/catalog"
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/database"
-	"github.com/hjongedijk/drakkar/internal/fuse"
 	"github.com/hjongedijk/drakkar/internal/hydra"
 	"github.com/hjongedijk/drakkar/internal/library"
 	"github.com/hjongedijk/drakkar/internal/maintenance"
@@ -34,6 +33,7 @@ import (
 	"github.com/hjongedijk/drakkar/internal/subtitles"
 	"github.com/hjongedijk/drakkar/internal/tmdb"
 	"github.com/hjongedijk/drakkar/internal/tvdb"
+	"github.com/hjongedijk/drakkar/internal/vfs"
 	"github.com/hjongedijk/drakkar/internal/workflow"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -110,6 +110,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 	if env := os.Getenv("DRAKKAR_HTTP_ADDR"); env != "" {
 		rt.HTTPAddress = env
+	}
+	if env := os.Getenv("DRAKKAR_VFS_BASE_URL"); env != "" {
+		rt.VFSBaseURL = env
 	}
 
 	cfg, err := config.Load(rt.SettingsPath)
@@ -292,13 +295,8 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	if err := publicationSvc.RebuildPublications(ctx); err != nil {
 		return err
 	}
-	// Attempt lazy unmount in case a previous process left a stale FUSE socket.
-	_ = fuse.LazyUnmount(rt.FuseMountPath)
-	fuseServer, err := fuse.Mount(rt.FuseMountPath, rt.StagingNZBPath, rt.NZBUploadLimitBytes, queueSvc)
-	if err != nil {
-		return err
-	}
-	defer fuseServer.Unmount()
+	// VFS HTTP server — replaces FUSE; serves NZB segments via Range requests.
+	vfsServer := vfs.NewServer(db)
 	broker := api.NewEventBroker()
 
 	// live metrics collector — reads NNTP pool + scheduler + disk cache at query time
@@ -315,9 +313,11 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 	taskScheduleSvc := &taskScheduleStatusService{db: db}
 
+	apiRouter := api.Router(statusSvc, queueSvc, workflowSvc, publicationSvc, maintenanceSvc, cacheSvc, subtitleSvc, blocklistSvc, probeSvc, catalogSvc, broker, db, db.ReadAhead, db, taskScheduleSvc, policySvc, plexClient, metricsColl)
+	vfsServer.Register(apiRouter)
 	server := &http.Server{
 		Addr:              rt.HTTPAddress,
-		Handler:           api.Router(statusSvc, queueSvc, workflowSvc, publicationSvc, maintenanceSvc, cacheSvc, subtitleSvc, blocklistSvc, probeSvc, catalogSvc, broker, db, db.ReadAhead, db, taskScheduleSvc, policySvc, plexClient, metricsColl),
+		Handler:           apiRouter,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -501,10 +501,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
-		return fuseServer.Unmount()
+		return server.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		return err
 	}

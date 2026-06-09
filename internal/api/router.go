@@ -162,7 +162,7 @@ type Status struct {
 	StartedAt            time.Time      `json:"startedAt"`
 	Settings             map[string]any `json:"settings"`
 	Integrations         Integrations   `json:"integrations"`
-	FuseMountPath        string         `json:"fuseMountPath"`
+	VFSBaseURL            string         `json:"vfsBaseUrl"`
 	DiskCacheLimitBytes  int64          `json:"diskCacheLimitBytes"`
 	ReadAheadLimitBytes  int64          `json:"readAheadLimitBytes"`
 	MemoryHotCacheBytes  int64          `json:"memoryHotCacheBytes"`
@@ -205,7 +205,7 @@ func (b *EventBroker) Publish(event map[string]any) {
 	}
 }
 
-func Router(status StatusService, queue QueueService, workflow WorkflowService, publication PublicationService, maintenance MaintenanceService, cacheSvc CacheService, subtitleSvc SubtitleService, blocklistSvc BlocklistService, probeSvc IntegrationProbeService, catalogSvc CatalogService, broker *EventBroker, healthRepo HealthRepository, streamsProvider StreamsProvider, profilesRepo ProfilesRepository, taskSchedules TaskScheduleProvider, policySvc PolicyService, plexClient *plex.Client, metricsProvider ...MetricsProvider) http.Handler {
+func Router(status StatusService, queue QueueService, workflow WorkflowService, publication PublicationService, maintenance MaintenanceService, cacheSvc CacheService, subtitleSvc SubtitleService, blocklistSvc BlocklistService, probeSvc IntegrationProbeService, catalogSvc CatalogService, broker *EventBroker, healthRepo HealthRepository, streamsProvider StreamsProvider, profilesRepo ProfilesRepository, taskSchedules TaskScheduleProvider, policySvc PolicyService, plexClient *plex.Client, metricsProvider ...MetricsProvider) chi.Router {
 	r := chi.NewRouter()
 	r.Use(corsMiddleware)
 	publishMutation := func(kind string, fields map[string]any) {
@@ -1171,55 +1171,9 @@ func Router(status StatusService, queue QueueService, workflow WorkflowService, 
 		respondJSON(w, http.StatusOK, map[string]any{"libraryItemId": libraryItemID, "profileId": body.ProfileID})
 	})
 
-	// VFS directory browser — lists entries under /mnt/drakkar/vfs.
+	// VFS browser — returns empty; content is served via HTTP at /content/{id}/{filename}.
 	r.Get("/api/vfs", func(w http.ResponseWriter, r *http.Request) {
-		type VFSEntry struct {
-			Name  string `json:"name"`
-			Path  string `json:"path"`
-			IsDir bool   `json:"isDir"`
-			Size  int64  `json:"size"`
-		}
-		reqPath := r.URL.Query().Get("path")
-		if reqPath == "" {
-			reqPath = "/"
-		}
-		// Resolve against the configured VFS mount path from the status service.
-		mountBase := "/mnt/drakkar/vfs"
-		if ss, ok := status.(interface{ Status() Status }); ok {
-			if mp := ss.Status().FuseMountPath; mp != "" {
-				mountBase = mp
-			}
-		}
-		fsPath := mountBase
-		if reqPath != "/" {
-			fsPath = mountBase + "/" + strings.TrimPrefix(reqPath, "/")
-		}
-		entries, err := os.ReadDir(fsPath)
-		if err != nil {
-			respondError(w, http.StatusBadRequest, err)
-			return
-		}
-		out := make([]VFSEntry, 0, len(entries))
-		for _, e := range entries {
-			info, _ := e.Info()
-			var size int64
-			if info != nil && !e.IsDir() {
-				size = info.Size()
-			}
-			childPath := reqPath
-			if childPath == "/" {
-				childPath = "/" + e.Name()
-			} else {
-				childPath = reqPath + "/" + e.Name()
-			}
-			out = append(out, VFSEntry{
-				Name:  e.Name(),
-				Path:  childPath,
-				IsDir: e.IsDir(),
-				Size:  size,
-			})
-		}
-		respondJSON(w, http.StatusOK, map[string]any{"path": reqPath, "entries": out})
+		respondJSON(w, http.StatusOK, map[string]any{"path": "/", "entries": []any{}})
 	})
 	// Plex integration
 	r.Post("/api/plex/test", func(w http.ResponseWriter, r *http.Request) {
@@ -1347,7 +1301,7 @@ func StatusFromConfig(rt config.Runtime, cfg config.Settings, startedAt time.Tim
 		StartedAt:           startedAt,
 		Settings:            config.RedactedSettings(cfg),
 		Integrations:        integrationStatusFromConfig(cfg),
-		FuseMountPath:       rt.FuseMountPath,
+		VFSBaseURL:           rt.VFSBaseURL,
 		DiskCacheLimitBytes: rt.DiskCacheLimitBytes,
 		ReadAheadLimitBytes: rt.ReadAheadLimitBytes,
 		MemoryHotCacheBytes: rt.MemoryHotCacheMaxBytes,
