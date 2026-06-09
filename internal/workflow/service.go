@@ -170,7 +170,7 @@ func NewService(repo Repository, seerr SeerrClient, hydra HydraClient) *Service 
 		seerr:     seerr,
 		hydra:     hydra,
 		fetcher:   HTTPNZBFetcher{},
-		WorkQueue: NewWorkQueue(2), // 2 concurrent searches: enough throughput while avoiding DB write deadlocks
+		WorkQueue: NewWorkQueue(1), // 1 worker = 1 active item at a time (nzbdav parity)
 		importSem: make(chan struct{}, 1), // 1 concurrent import/preflight/publish (nzbdav parity)
 	}
 }
@@ -819,21 +819,19 @@ func isRetryableSearchFailure(err error) bool {
 }
 
 func (s *Service) fetchAndImportSelectedRelease(ctx context.Context, selectedReleaseID int64) (*int64, error) {
-	// Acquire the import semaphore — only 1 NZB fetch+index at a time to
-	// avoid DB write contention on nzb_segments during bulk inserts.
-	// The semaphore is released immediately after indexing; publish runs
-	// concurrently so one slow season pack doesn't block the whole queue.
+	// One item at a time through the full pipeline — same as nzbdav SemaphoreSlim(1,1).
+	// Covers fetch + bulk segment insert + symlink publish so Plex sees a clean,
+	// complete entry the moment it appears. Others wait in 'selected' state.
 	select {
 	case s.importSem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	defer func() { <-s.importSem }()
 	result, importedRelease, err := s.fetchIndexAndRelease(ctx, selectedReleaseID)
-	<-s.importSem // release before publish — publish can run concurrently
 	if err != nil || importedRelease == nil {
 		return result, err
 	}
-	// Publish the indexed release (create symlinks, mark available, etc.)
 	return s.publishImportedRelease(ctx, *importedRelease)
 }
 
