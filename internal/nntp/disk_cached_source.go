@@ -79,9 +79,7 @@ func (s *DiskCachedDecodedSource) DecodedBodyInfoPriority(ctx context.Context, m
 		if err != nil {
 			return nil, err
 		}
-		if err := s.cache.Put(messageID, decoded); err != nil {
-			return nil, err
-		}
+		_ = s.cache.Put(messageID, decoded) // no-op when disk cache root is empty
 		s.storePartInfo(messageID, info)
 		return decoded, nil
 	})

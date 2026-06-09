@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/hjongedijk/drakkar/internal/metrics"
 	"github.com/hjongedijk/drakkar/internal/stream"
@@ -89,6 +90,7 @@ func (f *SegmentFetcher) FetchRangeInfoPriority(ctx context.Context, segment str
 	}
 	if err != nil {
 		metrics.M.NNTPFetchFailures.Add(1)
+		slog.Error("nntp fetch failed", "messageID", segment.MessageID, "err", err)
 		return nil, stream.SegmentSpan{}, fmt.Errorf("fetch decoded article %s: %w", segment.MessageID, err)
 	}
 	metrics.M.NNTPArticlesFetched.Add(1)
