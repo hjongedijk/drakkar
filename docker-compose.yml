@@ -72,8 +72,8 @@ services:
       --allow-other
       --vfs-cache-mode full
       --vfs-cache-max-size 1G
-      --dir-cache-time 10s
-      --poll-interval 10s
+      --dir-cache-time 5m
+      --poll-interval 30s
       --rc
       --rc-addr :5572
       --rc-no-auth

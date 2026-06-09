@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hjongedijk/drakkar/internal/database"
@@ -52,11 +53,33 @@ func IdsPath(id int64, filename string) string {
 }
 
 type davFS struct {
-	lister VirtualFileLister
-	opener FileOpener
+	lister    VirtualFileLister
+	opener    FileOpener
+	cacheMu   sync.Mutex
+	cacheAt   time.Time
+	cacheData []database.VirtualFileEntry
 }
 
+const listCacheTTL = 2 * time.Minute
+
 var epoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// listFiles returns all virtual files, cached for listCacheTTL to avoid
+// hammering the DB on every rclone poll interval.
+func (d *davFS) listFiles(ctx context.Context) ([]database.VirtualFileEntry, error) {
+	d.cacheMu.Lock()
+	defer d.cacheMu.Unlock()
+	if time.Since(d.cacheAt) < listCacheTTL && d.cacheData != nil {
+		return d.cacheData, nil
+	}
+	files, err := d.lister.ListAllVirtualFiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d.cacheData = files
+	d.cacheAt = time.Now()
+	return files, nil
+}
 
 func (d *davFS) Mkdir(_ context.Context, _ string, _ os.FileMode) error { return os.ErrPermission }
 func (d *davFS) RemoveAll(_ context.Context, _ string) error             { return os.ErrPermission }
@@ -91,7 +114,7 @@ func (d *davFS) OpenFile(ctx context.Context, name string, _ int, _ os.FileMode)
 
 	// ── /content ──────────────────────────────────────────────────────────────
 	if name == "/content" {
-		files, err := d.lister.ListAllVirtualFiles(ctx)
+		files, err := d.listFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +127,7 @@ func (d *davFS) OpenFile(ctx context.Context, name string, _ int, _ os.FileMode)
 	// /content/{filename} — look up by filename
 	if strings.HasPrefix(name, "/content/") {
 		fname := path.Base(name)
-		files, err := d.lister.ListAllVirtualFiles(ctx)
+		files, err := d.listFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +146,7 @@ func (d *davFS) OpenFile(ctx context.Context, name string, _ int, _ os.FileMode)
 	// ── /completed-symlinks ───────────────────────────────────────────────────
 	// Mirrors /content but serves .rclonelink files (plain-text path to /.ids/...)
 	if name == "/completed-symlinks" {
-		files, err := d.lister.ListAllVirtualFiles(ctx)
+		files, err := d.listFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +159,7 @@ func (d *davFS) OpenFile(ctx context.Context, name string, _ int, _ os.FileMode)
 	if strings.HasPrefix(name, "/completed-symlinks/") {
 		linkName := path.Base(name)
 		fname := strings.TrimSuffix(linkName, ".rclonelink")
-		files, err := d.lister.ListAllVirtualFiles(ctx)
+		files, err := d.listFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +176,7 @@ func (d *davFS) OpenFile(ctx context.Context, name string, _ int, _ os.FileMode)
 	// Structure: /.ids/{c0}/{c1}/{c2}/{c3}/{c4}/{12-digit-id}/{filename}
 	if name == "/.ids" {
 		// List all unique first characters of the prefix
-		files, err := d.lister.ListAllVirtualFiles(ctx)
+		files, err := d.listFiles(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -180,7 +203,7 @@ func (d *davFS) openIdsPath(ctx context.Context, name string) (webdav.File, erro
 	rest := strings.TrimPrefix(name, "/.ids/")
 	parts := strings.SplitN(rest, "/", 7) // max: c0/c1/c2/c3/c4/id/filename
 
-	files, err := d.lister.ListAllVirtualFiles(ctx)
+	files, err := d.listFiles(ctx)
 	if err != nil {
 		return nil, err
 	}
