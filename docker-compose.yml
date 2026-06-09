@@ -68,6 +68,7 @@ services:
     command: >
       mount drakkar:
       /mnt/drakkar/vfs
+      --allow-non-empty
       --allow-other
       --links
       --use-cookies
