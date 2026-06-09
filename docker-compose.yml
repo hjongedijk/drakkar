@@ -10,9 +10,10 @@ services:
       DRAKKAR_HTTP_ADDR: :8080
       DRAKKAR_VFS_BASE_URL: http://drakkar:8080
       DRAKKAR_RCLONE_MOUNT: /mnt/drakkar/vfs
+      DRAKKAR_RCLONE_RC: http://drakkar_rclone:5572
     volumes:
       - ./data:/app/data
-      - /mnt:/mnt
+      - /mnt:/mnt:rshared
     ports:
       - "8080:8080"
     depends_on:
@@ -62,6 +63,8 @@ services:
       - SYS_ADMIN
     security_opt:
       - apparmor:unconfined
+    ports:
+      - "5572:5572"
     command: >
       mount drakkar:
       /mnt/drakkar/vfs
@@ -71,6 +74,9 @@ services:
       --vfs-cache-max-size 1G
       --dir-cache-time 10s
       --poll-interval 10s
+      --rc
+      --rc-addr :5572
+      --rc-no-auth
       --log-level INFO
     depends_on:
       - drakkar

@@ -24,6 +24,7 @@ import (
 	"github.com/hjongedijk/drakkar/internal/nzb"
 	"github.com/hjongedijk/drakkar/internal/opensubtitles"
 	"github.com/hjongedijk/drakkar/internal/plex"
+	"github.com/hjongedijk/drakkar/internal/rclone"
 	"github.com/hjongedijk/drakkar/internal/policy"
 	"github.com/hjongedijk/drakkar/internal/probe"
 	"github.com/hjongedijk/drakkar/internal/queue"
@@ -117,6 +118,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	if env := os.Getenv("DRAKKAR_RCLONE_MOUNT"); env != "" {
 		rt.RcloneMountPath = env
 	}
+	rcloneRCURL := os.Getenv("DRAKKAR_RCLONE_RC") // e.g. http://drakkar_rclone:5572
 
 	cfg, err := config.Load(rt.SettingsPath)
 	if err != nil {
@@ -258,11 +260,19 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	blocklistSvc := blocklist.NewService(db)
 	probeSvc := probe.NewService(probeProviders...)
 	plexClient := plex.NewClient(cfg.Plex.URL, cfg.Plex.Token)
+	rcloneClient := rclone.NewClient(rcloneRCURL)
 	publicationSvc.SetPostPublishHook(func(ctx context.Context, libraryItemID int64) error {
 		if err := subtitleSvc.RepublishStoredSubtitles(ctx, libraryItemID); err != nil {
 			return err
 		}
 		subtitleSvc.TriggerAutomaticSearch(libraryItemID)
+		// Tell rclone to forget its VFS cache for the /content/ directory so
+		// Plex sees the new file immediately — matches nzbdav's RcloneVfsForget.
+		go func() {
+			rcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = rcloneClient.ForgetVfsPaths(rcCtx, []string{"/content"})
+		}()
 		// Notify Plex to scan the new file's library section.
 		if plexClient.Enabled() {
 			go func() {
