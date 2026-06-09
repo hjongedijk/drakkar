@@ -48,9 +48,13 @@ func NewServer(db DB) *Server {
 func (s *Server) Register(r chi.Router) {
 	r.Get("/content/{id}/{filename}", s.serveFile)
 	r.Head("/content/{id}/{filename}", s.serveFile)
-	// WebDAV mount point — rclone uses PROPFIND here to discover files.
-	r.Handle("/dav/*", http.StripPrefix("/dav", s.dav))
-	r.Handle("/dav", http.RedirectHandler("/dav/", http.StatusMovedPermanently))
+	// WebDAV mount — PROPFIND, GET, HEAD, OPTIONS and other WebDAV methods.
+	// chi.Handle only covers known methods; use a catch-all middleware for /dav/*.
+	davStripped := http.StripPrefix("/dav", s.dav)
+	davHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		davStripped.ServeHTTP(w, req)
+	})
+	r.Mount("/dav", davHandler)
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
