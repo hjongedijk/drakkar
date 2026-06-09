@@ -55,7 +55,21 @@ type importedFileSegments struct {
 }
 
 func (db *DB) ListQueue(ctx context.Context) ([]QueueSnapshot, error) {
+	// Return active items (all states except requested) + last 200 available/failed.
+	// Skipping 'requested' items keeps the response fast — there can be thousands
+	// and they're not actionable until the search worker picks them up.
 	rows, err := db.SQL.QueryContext(ctx, `
+		with active as (
+			select q.id from queue_items q
+			where q.state not in ('requested', 'available', 'failed')
+		),
+		recent_history as (
+			select q.id from queue_items q
+			where q.state in ('available', 'failed')
+			order by q.updated_at desc, q.id desc
+			limit 200
+		),
+		ids as (select id from active union select id from recent_history)
 		select
 			q.id,
 			q.library_item_id,
@@ -71,6 +85,7 @@ func (db *DB) ListQueue(ctx context.Context) ([]QueueSnapshot, error) {
 			q.created_at,
 			q.updated_at
 		from queue_items q
+		join ids on ids.id = q.id
 		join library_items l on l.id = q.library_item_id
 		left join selected_releases sr on sr.id = q.selected_release_id
 		left join nzb_documents n on n.selected_release_id = sr.id
@@ -83,13 +98,11 @@ func (db *DB) ListQueue(ctx context.Context) ([]QueueSnapshot, error) {
 				when 'selected' then 4
 				when 'ranking' then 5
 				when 'searching' then 6
-				when 'requested' then 7
-				when 'available' then 8
-				when 'failed' then 9
-				else 10
+				when 'available' then 7
+				when 'failed' then 8
+				else 9
 			end asc,
 			q.updated_at desc,
-			q.created_at desc,
 			q.id desc`)
 	if err != nil {
 		return nil, err

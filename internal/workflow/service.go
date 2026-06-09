@@ -819,16 +819,15 @@ func isRetryableSearchFailure(err error) bool {
 }
 
 func (s *Service) fetchAndImportSelectedRelease(ctx context.Context, selectedReleaseID int64) (*int64, error) {
-	// One item at a time through the full pipeline — same as nzbdav SemaphoreSlim(1,1).
-	// Covers fetch + bulk segment insert + symlink publish so Plex sees a clean,
-	// complete entry the moment it appears. Others wait in 'selected' state.
+	// Semaphore: 1 NZB fetch+index at a time to avoid DB write contention.
+	// Released before publish so season packs don't block the next fetch.
 	select {
 	case s.importSem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	defer func() { <-s.importSem }()
 	result, importedRelease, err := s.fetchIndexAndRelease(ctx, selectedReleaseID)
+	<-s.importSem // release before publish — next NZB can be fetched while this one publishes
 	if err != nil || importedRelease == nil {
 		return result, err
 	}
