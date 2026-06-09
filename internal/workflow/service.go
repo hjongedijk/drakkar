@@ -1130,17 +1130,22 @@ func (s *Service) importSelectedRelease(ctx context.Context, current database.Re
 			return s.promoteNextAfterFailure(ctx, current, err.Error())
 		}
 	}
+	// Fast-fail: if no virtual files were created, skip publish immediately.
+	// Don't call postImportHook (FUSE symlinks, subtitles, Plex) for an empty release.
 	updated, err := s.repo.GetSelectedReleaseSummary(ctx, current.SelectedReleaseID)
-	if err == nil && updated.VirtualFileCount == 0 && strings.TrimSpace(updated.ArchiveRejects) != "" {
-		return s.promoteNextAfterFailure(ctx, current, updated.ArchiveRejects)
+	if err == nil && updated.VirtualFileCount == 0 {
+		reason := strings.TrimSpace(updated.ArchiveRejects)
+		if reason == "" {
+			reason = "no_publishable_files"
+		}
+		return s.promoteNextAfterFailure(ctx, current, reason)
 	}
 	if s.postImportHook != nil {
 		if err := s.postImportHook(ctx, item); err != nil {
 			failureReason := err.Error()
 			if errors.Is(err, library.ErrNoVirtualFiles) {
-				updated, lookupErr := s.repo.GetSelectedReleaseSummary(ctx, current.SelectedReleaseID)
-				if lookupErr == nil && strings.TrimSpace(updated.ArchiveRejects) != "" {
-					failureReason = updated.ArchiveRejects
+				if updated2, lookupErr := s.repo.GetSelectedReleaseSummary(ctx, current.SelectedReleaseID); lookupErr == nil && strings.TrimSpace(updated2.ArchiveRejects) != "" {
+					failureReason = updated2.ArchiveRejects
 				}
 			}
 			return s.promoteNextAfterFailure(ctx, current, failureReason)

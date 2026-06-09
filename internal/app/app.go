@@ -261,20 +261,20 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	probeSvc := probe.NewService(probeProviders...)
 	plexClient := plex.NewClient(cfg.Plex.URL, cfg.Plex.Token)
 	publicationSvc.SetPostPublishHook(func(ctx context.Context, libraryItemID int64) error {
-		if err := subtitleSvc.RepublishStoredSubtitles(ctx, libraryItemID); err != nil {
-			return err
-		}
-		subtitleSvc.TriggerAutomaticSearch(libraryItemID)
-		// Notify Plex to scan the new file's library section.
-		if plexClient.Enabled() {
-			go func() {
-				refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := plexClient.RefreshSection(refreshCtx, cfg.Plex.SectionKey); err != nil {
+		// Run all post-publish work in a goroutine so nothing blocks the queue pipeline.
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			_ = subtitleSvc.RepublishStoredSubtitles(bgCtx, libraryItemID)
+			subtitleSvc.TriggerAutomaticSearch(libraryItemID)
+			if plexClient.Enabled() {
+				plexCtx, plexCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer plexCancel()
+				if err := plexClient.RefreshSection(plexCtx, cfg.Plex.SectionKey); err != nil {
 					logger.Warn().Err(err).Msg("plex library refresh failed")
 				}
-			}()
-		}
+			}
+		}()
 		return nil
 	})
 	postImport := func(ctx context.Context, item database.QueueSnapshot) error {
