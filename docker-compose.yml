@@ -51,6 +51,32 @@ services:
       timeout: 5s
       retries: 5
 
+  rclone:
+    image: rclone/rclone:latest
+    container_name: drakkar_rclone
+    restart: unless-stopped
+    volumes:
+      - ./data/rclone:/config/rclone
+      - /mnt/drakkar/vfs:/mnt/drakkar/vfs:rshared
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    command: >
+      mount drakkar:
+      /mnt/drakkar/vfs
+      --allow-non-empty
+      --allow-other
+      --vfs-cache-mode full
+      --vfs-cache-max-size 1G
+      --dir-cache-time 10s
+      --poll-interval 10s
+      --log-level INFO
+    depends_on:
+      - drakkar
+
   seerr:
     image: ghcr.io/sct/seerr:latest
     container_name: drakkar_seerr

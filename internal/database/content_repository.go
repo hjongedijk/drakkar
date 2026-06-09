@@ -105,6 +105,31 @@ func (unavailableSegmentFetcher) FetchRange(ctx context.Context, segment stream.
 	return nil, errors.New("direct_nzb fetcher unavailable: nntp not implemented yet")
 }
 
+// ListAllVirtualFiles returns a lightweight list of all published virtual files
+// for the WebDAV directory listing (used by rclone to mount the content).
+func (db *DB) ListAllVirtualFiles(ctx context.Context) ([]VirtualFileEntry, error) {
+	rows, err := db.SQL.QueryContext(ctx, `SELECT id, file_name, size_bytes FROM virtual_files ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VirtualFileEntry
+	for rows.Next() {
+		var e VirtualFileEntry
+		if err := rows.Scan(&e.ID, &e.FileName, &e.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+type VirtualFileEntry struct {
+	ID       int64
+	FileName string
+	Size     int64
+}
+
 func spanFileSize(spans []stream.SegmentSpan) int64 {
 	var end int64
 	for _, span := range spans {

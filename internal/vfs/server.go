@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/hjongedijk/drakkar/internal/stream"
+	"golang.org/x/net/webdav"
 )
 
 // FileOpener opens a virtual media file by ID.
@@ -21,20 +22,35 @@ type FileOpener interface {
 	OpenVirtualMediaFile(ctx context.Context, virtualFileID int64) (stream.VirtualMediaFile, error)
 }
 
+// DB is the combined interface needed by the VFS server.
+type DB interface {
+	FileOpener
+	VirtualFileLister
+}
+
 // Server is the HTTP content server. Mount it under /content on the main router.
 // Files are served at /content/{id}/{filename} with full Range support.
+// A WebDAV endpoint at /dav/ allows rclone to mount the content as a filesystem.
 type Server struct {
 	opener FileOpener
+	dav    *webdav.Handler
 }
 
-func NewServer(opener FileOpener) *Server {
-	return &Server{opener: opener}
+func NewServer(db DB) *Server {
+	davHandler := &webdav.Handler{
+		FileSystem: newDAVFS(db, db),
+		LockSystem: webdav.NewMemLS(),
+	}
+	return &Server{opener: db, dav: davHandler}
 }
 
-// Register mounts the content routes on r.
+// Register mounts content + WebDAV routes on r.
 func (s *Server) Register(r chi.Router) {
 	r.Get("/content/{id}/{filename}", s.serveFile)
 	r.Head("/content/{id}/{filename}", s.serveFile)
+	// WebDAV mount point — rclone uses PROPFIND here to discover files.
+	r.Handle("/dav/*", http.StripPrefix("/dav", s.dav))
+	r.Handle("/dav", http.RedirectHandler("/dav/", http.StatusMovedPermanently))
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {

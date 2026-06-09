@@ -1,4 +1,5 @@
 /data/settings.json
+/data/rclone/
 /data/postgres/
 /data/logs/
 /data/valkey/
