@@ -1165,8 +1165,9 @@ func (s *Service) promoteNextAfterFailure(ctx context.Context, current database.
 // We cap at 5 hops so we can try a few alternatives without stack-overflowing.
 func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current database.ReleaseSummary, reason string, depth int) (*int64, error) {
 	if depth >= 2 {
-		// Safety valve: stop recursing and leave the item failed.
+		// Depth limit: fail the current item so it doesn't stay stuck in preflight.
 		// The next scheduler cycle will pick it up with a fresh search.
+		_, _ = s.repo.FailSelectedReleaseAndPromoteNext(ctx, current.SelectedReleaseID, reason)
 		return nil, nil
 	}
 	metrics.M.FallbackReleaseAttempts.Add(1)
