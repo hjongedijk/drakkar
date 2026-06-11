@@ -15,6 +15,7 @@ import (
 	"github.com/hjongedijk/drakkar/internal/cache"
 	"github.com/hjongedijk/drakkar/internal/catalog"
 	"github.com/hjongedijk/drakkar/internal/config"
+	"github.com/hjongedijk/drakkar/internal/dav"
 	"github.com/hjongedijk/drakkar/internal/database"
 	"github.com/hjongedijk/drakkar/internal/fuse"
 	"github.com/hjongedijk/drakkar/internal/hydra"
@@ -110,6 +111,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 	if env := os.Getenv("DRAKKAR_HTTP_ADDR"); env != "" {
 		rt.HTTPAddress = env
+	}
+	if env := os.Getenv("DRAKKAR_WEBDAV_ADDR"); env != "" {
+		rt.WebDAVAddress = env
 	}
 
 	cfg, err := config.Load(rt.SettingsPath)
@@ -289,16 +293,14 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	queueSvc.SetPostImportHook(postImport)
 	workflowSvc.SetPostImportHook(postImport)
 	workflowSvc.SetQueuePolicyProvider(policySvc)
-	if err := publicationSvc.RebuildPublications(ctx); err != nil {
-		return err
-	}
 	// Attempt lazy unmount in case a previous process left a stale FUSE socket.
 	_ = fuse.LazyUnmount(rt.FuseMountPath)
-	fuseServer, err := fuse.Mount(rt.FuseMountPath, rt.StagingNZBPath, rt.NZBUploadLimitBytes, queueSvc)
-	if err != nil {
-		return err
+	fuseServer, fuseErr := fuse.Mount(rt.FuseMountPath, rt.StagingNZBPath, rt.NZBUploadLimitBytes, queueSvc)
+	if fuseErr != nil {
+		logger.Warn().Err(fuseErr).Str("path", rt.FuseMountPath).Msg("fuse mount failed — FUSE VFS unavailable, use WebDAV on port 8888 for file access")
+	} else {
+		defer fuseServer.Unmount()
 	}
-	defer fuseServer.Unmount()
 	broker := api.NewEventBroker()
 
 	// live metrics collector — reads NNTP pool + scheduler + disk cache at query time
@@ -347,6 +349,21 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		if sr.Searched > 0 || sr.Selected > 0 {
 			broker.Publish(map[string]any{"kind": "library.reconcile_background", "mediaType": mediaType, "searched": sr.Searched, "selected": sr.Selected})
 			logger.Info().Str("mediaType", mediaType).Int("processed", sr.Processed).Int("searched", sr.Searched).Int("selected", sr.Selected).Msg("monitoring: recent search complete")
+		}
+	}
+
+	// runStaleReset resets items that have been stuck in a transitional state
+	// for longer than 10 minutes. This catches workers that died mid-job without
+	// cleaning up state — something that only the startup reset can't handle.
+	runStaleReset := func() {
+		n, err := db.ResetStaleQueueItems(ctx, 10*time.Minute)
+		if err != nil {
+			logger.Error().Err(err).Msg("monitoring: stale reset error")
+			return
+		}
+		if n > 0 {
+			logger.Warn().Int("reset", n).Msg("monitoring: stale queue items reset")
+			broker.Publish(map[string]any{"kind": "queue.stale_reset", "reset": n})
 		}
 	}
 
@@ -476,6 +493,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		runRecentPass("movie")
 	})
 
+	startRecurring("stale-queue-reset", 5*time.Minute, true, runStaleReset)
 	startRecurring(taskRetryFailedQueue, 15*time.Minute, true, runRetryPass) // was 30m
 	startRecurring(taskRepublishPending, 30*time.Minute, true, runRepublishPass)
 	startRecurring(taskHealthCheck, 60*time.Minute, true, runHealthCheck)
@@ -489,6 +507,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 	})
 
+	webdavServer := &http.Server{
+		Addr:              rt.WebDAVAddress,
+		Handler:           dav.Handler(db, rt.MovieLibraryPath, rt.TVLibraryPath),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info().Str("addr", rt.HTTPAddress).Msg("http server starting")
@@ -496,15 +520,35 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			errCh <- err
 		}
 	}()
+	go func() {
+		logger.Info().Str("addr", rt.WebDAVAddress).Msg("webdav server starting")
+		if err := webdavServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error().Err(err).Msg("webdav server error")
+		}
+	}()
+	go func() {
+		if err := publicationSvc.RebuildPublications(ctx); err != nil {
+			logger.Error().Err(err).Msg("rebuild publications failed")
+		}
+	}()
+	go func() {
+		if err := db.CalibrateAllNZBOffsets(ctx); err != nil {
+			logger.Error().Err(err).Msg("calibrate nzb offsets failed")
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		_ = webdavServer.Shutdown(shutdownCtx)
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return err
 		}
-		return fuseServer.Unmount()
+		if fuseErr == nil {
+			return fuseServer.Unmount()
+		}
+		return nil
 	case err := <-errCh:
 		return err
 	}

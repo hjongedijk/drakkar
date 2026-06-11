@@ -307,21 +307,22 @@ type SubtitleCandidateRecord struct {
 }
 
 type LibrarySearchInput struct {
-	LibraryItemID  int64
-	MediaType      string
-	Title          string
-	IMDbID         string
-	MovieYear      int
-	MovieTMDBID    int64  // used in tmdbid= query parameter (Radarr approach)
-	ShowTitle      string
-	EpisodeTitle   string
-	ShowIMDbID     string
-	ShowTVDBID     int64
-	ShowTMDBID     int64  // used in tmdbid= query parameter for TV (Sonarr approach)
-	ShowYear       int
-	SeasonNumber   int
-	EpisodeNumber  int
-	TVShowID       int64  // DB primary key of tv_shows row, used for season pack tracking
+	LibraryItemID   int64
+	MediaType       string
+	Title           string
+	IMDbID          string
+	MovieYear       int
+	MovieTMDBID     int64  // used in tmdbid= query parameter (Radarr approach)
+	ShowTitle       string
+	EpisodeTitle    string
+	ShowIMDbID      string
+	ShowTVDBID      int64
+	ShowTMDBID      int64  // used in tmdbid= query parameter for TV (Sonarr approach)
+	ShowYear        int
+	SeasonNumber    int
+	EpisodeNumber   int
+	TVShowID        int64  // DB primary key of tv_shows row, used for season pack tracking
+	AlternateTitles []string // mirrors Radarr/Sonarr AlternativeTitles; checked as fallback
 }
 
 type SymlinkPublicationRecord struct {

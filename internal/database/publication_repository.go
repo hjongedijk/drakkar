@@ -117,6 +117,33 @@ func (db *DB) ListCompletedSymlinkEntries(ctx context.Context) ([]CompletedSymli
 	return out, rows.Err()
 }
 
+// SymlinkPublication holds the full library_path and target_path from symlink_publications.
+type SymlinkPublication struct {
+	LibraryPath string
+	TargetPath  string
+}
+
+func (db *DB) ListSymlinkPublications(ctx context.Context) ([]SymlinkPublication, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		select library_path, target_path
+		from symlink_publications
+		order by library_path asc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []SymlinkPublication
+	for rows.Next() {
+		var item SymlinkPublication
+		if err := rows.Scan(&item.LibraryPath, &item.TargetPath); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) ListSelectedReleasesForPublication(ctx context.Context) ([]int64, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
 		select distinct vf.selected_release_id

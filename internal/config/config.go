@@ -23,6 +23,7 @@ const (
 	DefaultFailedDiagnostics    = "/mnt/drakkar/failed"
 	DefaultLogsPath             = "/app/data/logs"
 	DefaultHTTPAddress          = ":8080"
+	DefaultWebDAVAddress        = ":8888"
 	DefaultDiskCacheLimitBytes  = int64(20 << 30)
 	DefaultReadAheadLimitBytes  = int64(512 << 20)
 	DefaultMemoryHotCacheBytes  = int64(512 << 20)
@@ -116,6 +117,7 @@ type SubtitleAuth struct {
 type Runtime struct {
 	SettingsPath           string
 	HTTPAddress            string
+	WebDAVAddress          string
 	FuseMountPath          string
 	MovieLibraryPath       string
 	TVLibraryPath          string
@@ -136,6 +138,7 @@ func DefaultRuntime() Runtime {
 	return Runtime{
 		SettingsPath:           DefaultSettingsPath,
 		HTTPAddress:            DefaultHTTPAddress,
+		WebDAVAddress:          DefaultWebDAVAddress,
 		FuseMountPath:          DefaultFuseMountPath,
 		MovieLibraryPath:       DefaultMovieLibraryPath,
 		TVLibraryPath:          DefaultTVLibraryPath,

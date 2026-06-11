@@ -106,7 +106,11 @@ type clientSession struct {
 }
 
 func (s *clientSession) Body(ctx context.Context, messageID string) ([]byte, error) {
-	if err := s.conn.SetDeadline(time.Now().Add(s.timeout)); err != nil {
+	deadline := time.Now().Add(s.timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := s.conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
 	if err := writeCommand(s.writer, "BODY "+normalizeMessageID(messageID)); err != nil {
@@ -123,7 +127,11 @@ func (s *clientSession) Body(ctx context.Context, messageID string) ([]byte, err
 }
 
 func (s *clientSession) Stat(ctx context.Context, messageID string) error {
-	if err := s.conn.SetDeadline(time.Now().Add(s.timeout)); err != nil {
+	deadline := time.Now().Add(s.timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := s.conn.SetDeadline(deadline); err != nil {
 		return err
 	}
 	if err := writeCommand(s.writer, "STAT "+normalizeMessageID(messageID)); err != nil {

@@ -82,6 +82,10 @@ type Requirements struct {
 	// TrustSource: skip title check for ID-based searches (TMDB/IMDB/TVDB).
 	// Obfuscated NZB subjects would otherwise wrongly reject valid results.
 	TrustSource bool
+	// AlternateTitles: additional titles to accept (e.g. "Avengers Assemble"
+	// for UK release of "The Avengers"). Matches any one of these before
+	// declaring wrong_title. Mirrors Radarr's AlternativeTitles check.
+	AlternateTitles []string
 }
 
 type Preferences struct {
@@ -114,8 +118,14 @@ func ScoreWithPreferences(candidate Candidate, required Requirements, prefs Pref
 	titleLower := strings.ToLower(candidate.Title)
 	requiredLower := strings.ToLower(required.Title)
 
-	if !required.TrustSource && !containsNormalized(titleLower, requiredLower) {
-		return Result{Rejected: true, RejectReason: "wrong_title"}
+	if !required.TrustSource {
+		matched := containsNormalized(titleLower, requiredLower)
+		for i := 0; i < len(required.AlternateTitles) && !matched; i++ {
+			matched = containsNormalized(titleLower, strings.ToLower(required.AlternateTitles[i]))
+		}
+		if !matched {
+			return Result{Rejected: true, RejectReason: "wrong_title"}
+		}
 	}
 
 	// ── Hard rejections ──────────────────────────────────────────────────────
@@ -396,7 +406,25 @@ const (
 )
 
 func containsNormalized(title, required string) bool {
-	return strings.Contains(normalizeText(title), normalizeText(required))
+	n := normalizeText(title)
+	r := normalizeText(required)
+	if strings.Contains(n, r) {
+		return true
+	}
+	// Radarr strips leading articles ("the", "a", "an") from both sides.
+	// Many releases drop the article that appears in the metadata title (or
+	// vice versa), e.g. "Batman 2022" vs required "The Batman". Re-try with
+	// the leading article removed so these aren't wrongly rejected.
+	return strings.Contains(stripLeadingArticle(n), stripLeadingArticle(r))
+}
+
+func stripLeadingArticle(text string) string {
+	for _, art := range []string{"the ", "a ", "an "} {
+		if strings.HasPrefix(text, art) {
+			return text[len(art):]
+		}
+	}
+	return text
 }
 
 func normalizeText(value string) string {
@@ -420,7 +448,12 @@ func matchYear(title string, requiredYear int) yearMatch {
 	if requiredYear <= 0 {
 		return yearUnknown
 	}
+	// Scan ALL 4-digit year tokens before declaring a mismatch. Returning
+	// mismatch on the first token was wrong for titles that start with a
+	// year (e.g. "2001: A Space Odyssey" or "1917"), where the title year
+	// would be checked before the release year further in the string.
 	tokens := strings.Fields(normalizeText(title))
+	foundNonMatch := false
 	for _, token := range tokens {
 		if len(token) != 4 {
 			continue
@@ -432,6 +465,9 @@ func matchYear(title string, requiredYear int) yearMatch {
 		if year == requiredYear {
 			return yearExact
 		}
+		foundNonMatch = true
+	}
+	if foundNonMatch {
 		return yearMismatch
 	}
 	return yearUnknown

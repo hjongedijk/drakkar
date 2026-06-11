@@ -163,7 +163,7 @@ func TestAssignArchiveRangesAcrossVolumes(t *testing.T) {
 	assignArchiveRanges(entries, map[int]int64{
 		0: 100,
 		1: 150,
-	})
+	}, nil)
 	if len(entries[0].Ranges) != 2 {
 		t.Fatalf("unexpected ranges %+v", entries[0].Ranges)
 	}

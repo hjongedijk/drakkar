@@ -42,6 +42,7 @@ func (r *DirectNzbReader) ReadAt(ctx context.Context, dst []byte, offset int64) 
 	}
 	written := 0
 	current := offset
+	emptyCount := 0
 	for int64(written) < length {
 		span, index, err := r.findSpan(current)
 		if err != nil {
@@ -80,11 +81,19 @@ func (r *DirectNzbReader) ReadAt(ctx context.Context, dst []byte, offset int64) 
 		}
 		r.realignSpans(index, actualSpan)
 		if len(block) == 0 {
-			if written > 0 {
-				return written, io.EOF
+			// realignSpans just corrected the span boundaries based on actual yEnc
+			// offsets. The requested position may now fall in a different span —
+			// retry findSpan rather than returning EOF immediately.
+			emptyCount++
+			if emptyCount > 5 || current >= r.size {
+				if written > 0 {
+					return written, io.EOF
+				}
+				return 0, io.EOF
 			}
-			return 0, io.EOF
+			continue
 		}
+		emptyCount = 0
 		copy(dst[written:written+len(block)], block)
 		written += len(block)
 		current += int64(len(block))

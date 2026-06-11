@@ -11,7 +11,8 @@ import (
 
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/stream"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type DB struct {
@@ -22,10 +23,16 @@ type DB struct {
 
 func Open(cfg config.DatabaseConfig) (*DB, error) {
 	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=disable", cfg.Host, cfg.Port, cfg.Name, cfg.Username, cfg.Password)
-	sqlDB, err := sql.Open("pgx", dsn)
+	pgxCfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open postgres: %w", err)
+		return nil, fmt.Errorf("parse postgres config: %w", err)
 	}
+	// idle_in_transaction_session_timeout prevents connection-pool self-deadlock:
+	// if a goroutine holds an open transaction (due to a missed Rollback) while
+	// blocked waiting for a second connection, postgres kills the idle transaction
+	// after 60s so the waiting goroutine can proceed.
+	pgxCfg.RuntimeParams["idle_in_transaction_session_timeout"] = "60000"
+	sqlDB := stdlib.OpenDB(*pgxCfg)
 	sqlDB.SetMaxOpenConns(12)
 	sqlDB.SetMaxIdleConns(4)
 	return &DB{SQL: sqlDB}, nil

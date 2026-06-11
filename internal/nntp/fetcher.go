@@ -103,8 +103,14 @@ func (f *SegmentFetcher) FetchRangeInfoPriority(ctx context.Context, segment str
 	}
 	start := int(segment.RangeStart - actualStart)
 	end := int(segment.RangeEnd - actualStart)
-	if start < 0 || end < start {
+	if end < start {
 		return nil, stream.SegmentSpan{SegmentID: segment.SegmentID, MessageID: segment.MessageID, Start: actualStart, End: actualEnd}, errors.New("invalid segment range")
+	}
+	// start < 0 means the actual decoded content of this segment begins AFTER
+	// our estimated RangeStart. The span table is stale — return empty so
+	// realignSpans + retry in DirectNzbReader can find the correct segment.
+	if start < 0 {
+		return []byte{}, stream.SegmentSpan{SegmentID: segment.SegmentID, MessageID: segment.MessageID, Start: actualStart, End: actualEnd}, nil
 	}
 	// Clamp end to actual decoded size. Estimated offsets may be ~0.15% too large
 	// (yEnc decode ratio varies per article). We return what exists rather than
