@@ -170,7 +170,7 @@ func NewService(repo Repository, seerr SeerrClient, hydra HydraClient) *Service 
 		seerr:     seerr,
 		hydra:     hydra,
 		fetcher:   HTTPNZBFetcher{},
-		WorkQueue: NewWorkQueue(1), // 1 worker = 1 active item at a time (nzbdav parity)
+		WorkQueue: NewWorkQueue(3), // 3 concurrent search workers; importSem still limits imports to 1
 		importSem: make(chan struct{}, 1), // 1 concurrent import/preflight/publish (nzbdav parity)
 	}
 }
@@ -849,6 +849,10 @@ type pendingPublish struct {
 func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID int64) (*int64, *pendingPublish, error) {
 	current, err := s.repo.GetSelectedReleaseSummary(ctx, selectedReleaseID)
 	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			// Concurrent worker already processed or deleted this release — skip quietly.
+			return nil, nil, nil
+		}
 		return nil, nil, err
 	}
 	if current.FailureCount >= 5 {
@@ -890,7 +894,7 @@ func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID in
 func (s *Service) publishImportedRelease(ctx context.Context, p pendingPublish) (*int64, error) {
 	if p.current.NZBDocumentID != nil && p.item.QueueItemID == 0 {
 		// Already indexed in a previous run — re-import from stored NZB.
-		return s.retrySelectedReleaseFromStoredNZB(ctx, p.current)
+		return s.retrySelectedReleaseFromStoredNZB(ctx, p.current, 0)
 	}
 	updated, err := s.repo.GetSelectedReleaseSummary(ctx, p.current.SelectedReleaseID)
 	if err == nil && updated.VirtualFileCount == 0 && strings.TrimSpace(updated.ArchiveRejects) != "" {
@@ -914,6 +918,10 @@ func (s *Service) publishImportedRelease(ctx context.Context, p pendingPublish) 
 func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, selectedReleaseID int64, depth int) (*int64, error) {
 	current, err := s.repo.GetSelectedReleaseSummary(ctx, selectedReleaseID)
 	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			// Concurrent worker already processed or deleted this release — skip quietly.
+			return nil, nil
+		}
 		return nil, err
 	}
 	// Hard guard: if this release has already failed 5+ times, blocklist it
@@ -926,7 +934,7 @@ func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, select
 	// preflight then reset), re-use the stored document instead of fetching again.
 	// This prevents duplicate entries in NZBHydra's download history.
 	if current.NZBDocumentID != nil {
-		return s.retrySelectedReleaseFromStoredNZB(ctx, current)
+		return s.retrySelectedReleaseFromStoredNZB(ctx, current, depth)
 	}
 	for {
 		if err := s.repo.MarkSelectedReleaseFetching(ctx, current.SelectedReleaseID); err != nil {
@@ -940,7 +948,7 @@ func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, select
 		if err != nil {
 			return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 		}
-		return s.importSelectedRelease(ctx, current, imported)
+		return s.importSelectedRelease(ctx, current, imported, depth)
 	}
 }
 
@@ -977,11 +985,12 @@ func searchRequirements(input database.LibrarySearchInput) ranking.Requirements 
 		mediaType = "tv"
 	}
 	required := ranking.Requirements{
-		MediaType:     mediaType,
-		Year:          input.MovieYear,
-		SeasonNumber:  input.SeasonNumber,
-		EpisodeNumber: input.EpisodeNumber,
-		Title:         input.Title,
+		MediaType:       mediaType,
+		Year:            input.MovieYear,
+		SeasonNumber:    input.SeasonNumber,
+		EpisodeNumber:   input.EpisodeNumber,
+		Title:           input.Title,
+		AlternateTitles: input.AlternateTitles,
 	}
 	if input.ShowTitle != "" {
 		required.Title = input.ShowTitle
@@ -1117,13 +1126,13 @@ func normalizeSearchText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(replacer.Replace(value))), " ")
 }
 
-func (s *Service) importSelectedRelease(ctx context.Context, current database.ReleaseSummary, imported database.ImportedNZB) (*int64, error) {
+func (s *Service) importSelectedRelease(ctx context.Context, current database.ReleaseSummary, imported database.ImportedNZB, depth int) (*int64, error) {
 	item, err := s.repo.ImportSelectedReleaseNZB(ctx, current.SelectedReleaseID, imported)
 	if err != nil {
-		return s.promoteNextAfterFailure(ctx, current, err.Error())
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	if err := s.repo.SetImportedNZBIndexed(ctx, item.QueueItemID); err != nil {
-		return s.promoteNextAfterFailure(ctx, current, err.Error())
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	item.State = database.QueuePreflight
 	// Preflight: verify first segments are reachable on NNTP before publishing.
@@ -1131,7 +1140,7 @@ func (s *Service) importSelectedRelease(ctx context.Context, current database.Re
 	// early and falls back to the next search candidate instead of publishing dead content.
 	if s.preflightChecker != nil {
 		if err := s.preflightChecker(ctx, item); err != nil {
-			return s.promoteNextAfterFailure(ctx, current, err.Error())
+			return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 		}
 	}
 	// Fast-fail: if no virtual files were created, skip publish immediately.
@@ -1142,7 +1151,7 @@ func (s *Service) importSelectedRelease(ctx context.Context, current database.Re
 		if reason == "" {
 			reason = "no_publishable_files"
 		}
-		return s.promoteNextAfterFailure(ctx, current, reason)
+		return s.promoteNextAfterFailureDepth(ctx, current, reason, depth)
 	}
 	if s.postImportHook != nil {
 		if err := s.postImportHook(ctx, item); err != nil {
@@ -1152,7 +1161,7 @@ func (s *Service) importSelectedRelease(ctx context.Context, current database.Re
 					failureReason = updated2.ArchiveRejects
 				}
 			}
-			return s.promoteNextAfterFailure(ctx, current, failureReason)
+			return s.promoteNextAfterFailureDepth(ctx, current, failureReason, depth)
 		}
 	}
 	value := current.SelectedReleaseID
@@ -1187,26 +1196,26 @@ func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current data
 		return s.promoteNextAfterFailureDepth(ctx, *next, "too_many_failures", depth+1)
 	}
 	if strings.TrimSpace(next.ExternalURL) == "" {
-		return s.retrySelectedReleaseFromStoredNZB(ctx, *next)
+		return s.retrySelectedReleaseFromStoredNZB(ctx, *next, depth+1)
 	}
 	// Recursively try the next candidate, but track depth to prevent stack overflow.
 	result, err := s.fetchAndImportSelectedReleaseDepth(ctx, next.SelectedReleaseID, depth+1)
 	return result, err
 }
 
-func (s *Service) retrySelectedReleaseFromStoredNZB(ctx context.Context, current database.ReleaseSummary) (*int64, error) {
+func (s *Service) retrySelectedReleaseFromStoredNZB(ctx context.Context, current database.ReleaseSummary, depth int) (*int64, error) {
 	if err := s.repo.MarkSelectedReleaseFetching(ctx, current.SelectedReleaseID); err != nil {
 		return nil, err
 	}
 	doc, err := s.repo.GetStoredNZBDocument(ctx, current.SelectedReleaseID)
 	if err != nil {
-		return s.promoteNextAfterFailure(ctx, current, err.Error())
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	imported, err := nzb.BuildImportedNZB(doc.FileName, doc.XML, fmt.Sprintf("selected-release:%d:stored", current.SelectedReleaseID), doc.ExternalURL)
 	if err != nil {
-		return s.promoteNextAfterFailure(ctx, current, err.Error())
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
-	return s.importSelectedRelease(ctx, current, imported)
+	return s.importSelectedRelease(ctx, current, imported, depth)
 }
 
 func (s *Service) SelectRelease(ctx context.Context, releaseCandidateID int64) (ReleaseActionResult, error) {
@@ -1342,12 +1351,14 @@ func buildSearchRequests(input database.LibrarySearchInput) SearchRequestPlan {
 
 	switch strings.ToLower(input.MediaType) {
 	case "movie":
-		// Tier 1: IDs (Radarr sends tmdbid first, then imdbid — both aggregated if supported)
+		// Tier 1: IDs — send TMDB+IMDb together (Radarr's aggregated approach).
+		// A separate IMDb-only query is redundant: the combined request already
+		// includes the IMDb ID, so NZBHydra2 routes it to IMDb-capable indexers.
 		if input.MovieTMDBID > 0 {
 			r := baseMovie("", input.MovieTMDBID, input.IMDbID)
 			dedup(&tier1, r)
-		}
-		if input.IMDbID != "" {
+		} else if input.IMDbID != "" {
+			// Only fallback to IMDb-only when there is no TMDB ID at all.
 			r := baseMovie("", 0, input.IMDbID)
 			dedup(&tier1, r)
 		}
@@ -1476,7 +1487,7 @@ func (s *Service) RetryQueueItem(ctx context.Context, queueItemID int64) (QueueR
 			}
 		}
 		if strings.TrimSpace(summary.ExternalURL) == "" {
-			selectedReleaseID, err := s.retrySelectedReleaseFromStoredNZB(ctx, summary)
+			selectedReleaseID, err := s.retrySelectedReleaseFromStoredNZB(ctx, summary, 0)
 			if err != nil {
 				return QueueRetryResult{}, err
 			}

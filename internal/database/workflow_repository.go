@@ -9,6 +9,57 @@ import (
 	"time"
 )
 
+// preDeleteVFRBySelectedRelease removes virtual_file_ranges rows that would be
+// cascade-deleted when a selected_release row is deleted, doing it as a single
+// bulk DELETE instead of one-per-segment. For large NZBs (100k+ segments) the
+// cascade does 100k individual index scans; this query does two.
+func preDeleteVFRBySelectedRelease(ctx context.Context, tx *sql.Tx, selectedReleaseID int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where nzb_segment_id in (
+			select ns.id from nzb_segments ns
+			join nzb_files nf on nf.id = ns.nzb_file_id
+			join nzb_documents nd on nd.id = nf.nzb_document_id
+			where nd.selected_release_id = $1
+		)`, selectedReleaseID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where virtual_file_id in (
+			select id from virtual_files where selected_release_id = $1
+		)`, selectedReleaseID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// preDeleteVFRByLibraryItem does the same bulk pre-delete for all selected
+// releases belonging to a library item.
+func preDeleteVFRByLibraryItem(ctx context.Context, tx *sql.Tx, libraryItemID int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where nzb_segment_id in (
+			select ns.id from nzb_segments ns
+			join nzb_files nf on nf.id = ns.nzb_file_id
+			join nzb_documents nd on nd.id = nf.nzb_document_id
+			join selected_releases sr on sr.id = nd.selected_release_id
+			where sr.library_item_id = $1
+		)`, libraryItemID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where virtual_file_id in (
+			select id from virtual_files where selected_release_id in (
+				select id from selected_releases where library_item_id = $1
+			)
+		)`, libraryItemID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // pgTextArray formats a Go string slice as a PostgreSQL text array literal.
 func pgTextArray(vals []string) string {
 	if len(vals) == 0 {
@@ -529,7 +580,8 @@ func (db *DB) GetLibrarySearchInput(ctx context.Context, libraryItemID int64) (L
 			coalesce(tv.release_year, 0),
 			coalesce(e.season_number, 0),
 			coalesce(e.episode_number, 0),
-			coalesce(tv.id, 0)
+			coalesce(tv.id, 0),
+			coalesce(m.alternative_titles, '{}') || coalesce(tv.alternative_titles, '{}')
 		from library_items li
 		left join movies m on m.id = li.movie_id
 		left join episodes e on e.id = li.episode_id
@@ -551,6 +603,7 @@ func (db *DB) GetLibrarySearchInput(ctx context.Context, libraryItemID int64) (L
 		&item.SeasonNumber,
 		&item.EpisodeNumber,
 		&item.TVShowID,
+		pgTextArrayScan(&item.AlternateTitles),
 	)
 	return item, err
 }
@@ -625,12 +678,25 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 
 func (db *DB) ListFailedQueueRetryTargets(ctx context.Context) ([]FailedQueueRetryTarget, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
-		select q.id, q.library_item_id, coalesce(q.failure_reason, '')
+		select
+			q.id,
+			q.library_item_id,
+			case
+				-- 'requested' items with a selected release are stuck: interrupted
+				-- before the fetch started. Treat as interrupted_by_restart so
+				-- RetryQueueItem re-dispatches fetchAndImportSelectedRelease.
+				when q.state = $2 and q.selected_release_id is not null
+					then 'interrupted_by_restart'
+				else coalesce(q.failure_reason, '')
+			end as failure_reason
 		from queue_items q
 		join library_items li on li.id = q.library_item_id
-		where q.state = $1
-		  and li.available = false
-		order by q.updated_at asc, q.id asc`, QueueFailed,
+		where li.available = false
+		  and (
+		    q.state = $1
+		    or (q.state = $2 and q.selected_release_id is not null)
+		  )
+		order by q.updated_at asc, q.id asc`, QueueFailed, QueueRequested,
 	)
 	if err != nil {
 		return nil, err
@@ -690,6 +756,9 @@ func (db *DB) ReplaceSearchCandidates(ctx context.Context, libraryItemID int64, 
 		update queue_items
 		set state = $2, failure_reason = '', updated_at = now()
 		where library_item_id = $1`, libraryItemID, QueueSearching); err != nil {
+		return nil, err
+	}
+	if err = preDeleteVFRByLibraryItem(ctx, tx, libraryItemID); err != nil {
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `delete from selected_releases where library_item_id = $1`, libraryItemID); err != nil {
@@ -941,6 +1010,9 @@ func (db *DB) SelectReleaseCandidate(ctx context.Context, releaseCandidateID int
 		return nil, err
 	}
 
+	if err = preDeleteVFRByLibraryItem(ctx, tx, libraryItemID); err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from selected_releases
 		where library_item_id = $1`, libraryItemID,
@@ -1043,6 +1115,9 @@ func (db *DB) promoteRetryCandidate(ctx context.Context, libraryItemID int64, ex
 		return nil, err
 	}
 
+	if err = preDeleteVFRByLibraryItem(ctx, tx, libraryItemID); err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from selected_releases
 		where library_item_id = $1`, libraryItemID,
@@ -1136,6 +1211,29 @@ func (db *DB) RejectReleaseCandidate(ctx context.Context, releaseCandidateID int
 				return nil, err
 			}
 		}
+	}
+	// Pre-delete VFR for the selected_release being removed by this promote.
+	if _, err = tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where nzb_segment_id in (
+			select ns.id from nzb_segments ns
+			join nzb_files nf on nf.id = ns.nzb_file_id
+			join nzb_documents nd on nd.id = nf.nzb_document_id
+			join selected_releases sr on sr.id = nd.selected_release_id
+			where sr.release_candidate_id = $1
+		)`, releaseCandidateID,
+	); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		delete from virtual_file_ranges
+		where virtual_file_id in (
+			select id from virtual_files where selected_release_id in (
+				select id from selected_releases where release_candidate_id = $1
+			)
+		)`, releaseCandidateID,
+	); err != nil {
+		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from selected_releases
@@ -1347,6 +1445,11 @@ func (db *DB) SkipReleaseCandidate(ctx context.Context, releaseCandidateID int64
 }
 
 func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedReleaseID int64, reason string) (*ReleaseSummary, error) {
+	// Cap at 90s: cascade-deleting nzb_segments/virtual_file_ranges for a large
+	// release (100k+ segments) takes ~22s with proper indexes. 90s gives headroom
+	// for the largest NZBs without hanging indefinitely on lock contention.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	tx, err := db.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1368,6 +1471,11 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 		join release_candidates rc on rc.id = sr.release_candidate_id
 		where sr.id = $1`, selectedReleaseID,
 	).Scan(&libraryItemID, &releaseCandidateID, &externalURL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Concurrent worker already deleted this selected_release — nothing to fail.
+			err = nil
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -1413,6 +1521,9 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 				return nil, err
 			}
 		}
+	}
+	if err = preDeleteVFRBySelectedRelease(ctx, tx, selectedReleaseID); err != nil {
+		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from selected_releases
@@ -1637,6 +1748,9 @@ func (db *DB) ClearQueueSelectedRelease(ctx context.Context, queueItemID int64) 
 	}
 
 	if selectedReleaseID.Valid {
+		if err = preDeleteVFRBySelectedRelease(ctx, tx, selectedReleaseID.Int64); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `delete from selected_releases where id = $1`, selectedReleaseID.Int64); err != nil {
 			return err
 		}

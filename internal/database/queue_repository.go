@@ -15,37 +15,52 @@ import (
 
 // bulkInsertSegments inserts all segments for one NZB file in a single query
 // (one round-trip instead of N). Returns the inserted IDs in segment order.
+// maxSegmentBatch is the max segments per INSERT to stay under PostgreSQL's
+// 65535-parameter limit (6 params per segment: 65535/6 = 10922, rounded down).
+const maxSegmentBatch = 10000
+
 func bulkInsertSegments(ctx context.Context, tx *sql.Tx, nzbFileID int64, segments []ImportedNZBSegment) ([]int64, error) {
 	if len(segments) == 0 {
 		return nil, nil
 	}
-	// Build: INSERT INTO nzb_segments (...) VALUES ($1,$2,$3,$4,$5,$6,'unknown'), ... RETURNING id
-	sb := strings.Builder{}
-	sb.WriteString(`insert into nzb_segments (nzb_file_id, segment_number, message_id, encoded_size_bytes, decoded_start_offset, decoded_end_offset, availability_status) values `)
-	args := make([]interface{}, 0, len(segments)*6)
-	for i, seg := range segments {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		base := i * 6
-		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,'unknown')", base+1, base+2, base+3, base+4, base+5, base+6)
-		args = append(args, nzbFileID, seg.Number, seg.MessageID, seg.EncodedSizeBytes, seg.DecodedStartOffset, seg.DecodedEndOffset)
-	}
-	sb.WriteString(` returning id`)
-	rows, err := tx.QueryContext(ctx, sb.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	ids := make([]int64, 0, len(segments))
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+	for start := 0; start < len(segments); start += maxSegmentBatch {
+		end := start + maxSegmentBatch
+		if end > len(segments) {
+			end = len(segments)
+		}
+		batch := segments[start:end]
+		sb := strings.Builder{}
+		sb.WriteString(`insert into nzb_segments (nzb_file_id, segment_number, message_id, encoded_size_bytes, decoded_start_offset, decoded_end_offset, availability_status) values `)
+		args := make([]interface{}, 0, len(batch)*6)
+		for i, seg := range batch {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			base := i * 6
+			fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,'unknown')", base+1, base+2, base+3, base+4, base+5, base+6)
+			args = append(args, nzbFileID, seg.Number, seg.MessageID, seg.EncodedSizeBytes, seg.DecodedStartOffset, seg.DecodedEndOffset)
+		}
+		sb.WriteString(` returning id`)
+		rows, err := tx.QueryContext(ctx, sb.String(), args...)
+		if err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 type importedFileSegments struct {
@@ -146,7 +161,7 @@ func (db *DB) ListQueue(ctx context.Context) ([]QueueSnapshot, error) {
 
 func (db *DB) CreateImportedNZB(ctx context.Context, imported ImportedNZB) (QueueSnapshot, error) {
 	imported = db.applyImportPolicies(ctx, imported)
-	imported.Archives = inspectImportedArchives(ctx, imported.Archives, imported.Files, nil)
+	imported.Archives = inspectImportedArchives(ctx, imported.Archives, imported.Files, db.SegmentFetcher)
 	tx, err := db.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return QueueSnapshot{}, err
@@ -227,8 +242,8 @@ func (db *DB) CreateImportedNZB(ctx context.Context, imported ImportedNZB) (Queu
 			return QueueSnapshot{}, err
 		}
 
-		segmentIDs, err := bulkInsertSegments(ctx, tx, nzbFileID, file.Segments)
-		if err != nil {
+		var segmentIDs []int64
+		if segmentIDs, err = bulkInsertSegments(ctx, tx, nzbFileID, file.Segments); err != nil {
 			return QueueSnapshot{}, err
 		}
 		fileSegments[file.FileName] = importedFileSegments{
@@ -294,7 +309,11 @@ func (db *DB) CreateImportedNZB(ctx context.Context, imported ImportedNZB) (Queu
 
 func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID int64, imported ImportedNZB) (QueueSnapshot, error) {
 	imported = db.applyImportPolicies(ctx, imported)
-	imported.Archives = inspectImportedArchives(ctx, imported.Archives, imported.Files, nil)
+	imported.Archives = inspectImportedArchives(ctx, imported.Archives, imported.Files, db.SegmentFetcher)
+	// Cap at 60s: deleting old nzb_segments cascades through nzb_files/virtual_file_ranges
+	// and can block for many minutes when calibration holds read locks on those rows.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 	tx, err := db.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return QueueSnapshot{}, err
@@ -316,6 +335,9 @@ func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID in
 		return QueueSnapshot{}, err
 	}
 
+	if err = preDeleteVFRBySelectedRelease(ctx, tx, selectedReleaseID); err != nil {
+		return QueueSnapshot{}, err
+	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from nzb_documents
 		where selected_release_id = $1`, selectedReleaseID); err != nil {
@@ -355,8 +377,8 @@ func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID in
 		).Scan(&nzbFileID); err != nil {
 			return QueueSnapshot{}, err
 		}
-		segmentIDs, err := bulkInsertSegments(ctx, tx, nzbFileID, file.Segments)
-		if err != nil {
+		var segmentIDs []int64
+		if segmentIDs, err = bulkInsertSegments(ctx, tx, nzbFileID, file.Segments); err != nil {
 			return QueueSnapshot{}, err
 		}
 		fileSegments[file.FileName] = importedFileSegments{
@@ -677,6 +699,10 @@ func filterImportedByPatterns(imported ImportedNZB, patterns []string) ImportedN
 		filtered.FileCount++
 		filtered.SegmentCount += len(file.Segments)
 	}
+	// Re-detect archives from the filtered file list — clearing then rebuilding
+	// ensures that files removed by the ignore patterns (e.g. .nfo, .par2) don't
+	// leave orphaned volume references in the archive groups.
+	filtered.Archives = DetectImportedArchives(filtered.Files)
 	return filtered
 }
 
@@ -730,6 +756,30 @@ func (db *DB) ResetStuckQueueItems(ctx context.Context) (int, error) {
 		QueueFailed,
 		QueueFetchingNZB, QueueIndexing, QueuePublishing,
 		QueuePreflight, QueueSearching, QueueRanking, QueueSelected,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+// ResetStaleQueueItems resets items that have been stuck in a transitional
+// state for longer than staleAfter. Called periodically during operation to
+// recover from workers that died mid-job without cleaning up their state.
+func (db *DB) ResetStaleQueueItems(ctx context.Context, staleAfter time.Duration) (int, error) {
+	cutoff := time.Now().Add(-staleAfter)
+	result, err := db.SQL.ExecContext(ctx, `
+		UPDATE queue_items SET
+			state = $1,
+			failure_reason = 'stale_worker',
+			updated_at = now()
+		WHERE state IN ($2, $3, $4, $5, $6, $7, $8)
+		  AND updated_at < $9`,
+		QueueFailed,
+		QueueFetchingNZB, QueueIndexing, QueuePublishing,
+		QueuePreflight, QueueSearching, QueueRanking, QueueSelected,
+		cutoff,
 	)
 	if err != nil {
 		return 0, err

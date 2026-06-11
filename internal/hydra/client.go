@@ -349,6 +349,7 @@ func searchCacheKey(request SearchRequest) string {
 		strings.ToLower(strings.TrimSpace(request.MediaType)),
 		strings.ToLower(strings.TrimSpace(request.Query)),
 		strings.ToLower(strings.TrimSpace(normalizeIMDbID(request.IMDbID))),
+		fmt.Sprintf("%d", request.TMDBID),
 		fmt.Sprintf("%d", request.TVDBID),
 		fmt.Sprintf("%d", request.SeasonNumber),
 		fmt.Sprintf("%d", request.EpisodeNumber),

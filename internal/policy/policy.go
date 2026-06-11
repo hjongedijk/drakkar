@@ -13,7 +13,8 @@ const (
 	KeyEncryptedArchive       FailureKey = "encrypted_archive"
 	KeyNZBParseFailed         FailureKey = "nzb_parse_failed"
 	KeyNZBFetchFailed         FailureKey = "nzb_fetch_failed"
-	KeyNZBFetch4xx            FailureKey = "nzb_fetch_4xx"    // 4xx = permanent auth/not-found, blocklist
+	KeyNZBFetch4xx            FailureKey = "nzb_fetch_4xx"    // 401/404/410/451 = permanent auth/not-found, blocklist
+	KeyNZBFetch403            FailureKey = "nzb_fetch_403"    // 403 = quota/rate-limit (e.g. NZBFinder), retry later
 	KeyPreflightFailed        FailureKey = "preflight_failed"
 	KeyPublishFailed          FailureKey = "publish_failed"
 	KeySymlinkFailed          FailureKey = "symlink_failed"
@@ -52,8 +53,9 @@ var defaultMatrix = map[FailureKey]Action{
 	KeyUnsupportedArchive:    ActionBlocklistAndSearch, // solid/encrypted RAR → block, search again
 	KeyEncryptedArchive:      ActionBlocklistAndSearch,
 	KeyNZBParseFailed:        ActionBlocklistAndSearch, // bad NZB XML → block URL, search again
-	KeyNZBFetchFailed:        ActionBlocklistAndSearch,  // fetch failed → blocklist this URL, find another
-	KeyNZBFetch4xx:           ActionBlocklistAndSearch,  // 403/404/410 = permanent error, blocklist immediately
+	KeyNZBFetchFailed:        ActionBlocklistAndSearch, // fetch failed → blocklist this URL, find another
+	KeyNZBFetch4xx:           ActionBlocklistAndSearch, // 401/404/410/451 = permanent error, blocklist immediately
+	KeyNZBFetch403:           ActionRetryLater,         // 403 = quota exhausted (NZBFinder etc.), retry when quota resets
 	KeyPreflightFailed:       ActionSearchAgain,        // transient preflight → try another release
 	KeyPublishFailed:         ActionRetryLater,         // FUSE publish issue → retry, don't abandon
 	KeySymlinkFailed:         ActionRetryLater,
@@ -61,7 +63,7 @@ var defaultMatrix = map[FailureKey]Action{
 	KeyAllCandidatesRejected: ActionDoNothing,
 	KeyBadSource:             ActionBlocklistAndSearch,
 	KeyWrongTitle:            ActionSearchAgain, // bad title match → retry search, don't blocklist valid NZBs
-	KeyInterruptedByRestart:  ActionSearchAgain,        // was mid-fetch → retry same flow
+	KeyInterruptedByRestart:  ActionSearchAgain, // was mid-fetch → retry same flow
 	KeyUnknown:               ActionDoNothing,
 }
 
@@ -90,9 +92,12 @@ func Classify(reason string) FailureKey {
 		strings.Contains(r, "parse nzb"):
 		return KeyNZBParseFailed
 
-	// 4xx HTTP errors are permanent — blocklist immediately instead of retrying.
-	case strings.Contains(r, "status 403") ||
-		strings.Contains(r, "status 404") ||
+	// 403 = quota exhausted (common with NZBFinder) — retry when quota resets.
+	case strings.Contains(r, "status 403"):
+		return KeyNZBFetch403
+
+	// Other 4xx HTTP errors are permanent — blocklist immediately.
+	case strings.Contains(r, "status 404") ||
 		strings.Contains(r, "status 410") ||
 		strings.Contains(r, "status 401") ||
 		strings.Contains(r, "status 451"):
@@ -118,16 +123,22 @@ func Classify(reason string) FailureKey {
 		strings.Contains(r, "no_releases"):
 		return KeyNoReleaseFound
 
-	case strings.Contains(r, "all_candidates") ||
-		strings.Contains(r, "wrong_title") ||
-		strings.Contains(r, "wrong title"):
+	// "all_candidates" must be checked before "wrong_title" — the compound
+	// reason "all_candidates_wrong_title" contains "wrong_title" as a substring.
+	case strings.Contains(r, "all_candidates"):
 		return KeyAllCandidatesRejected
+
+	case strings.Contains(r, "wrong_title") ||
+		strings.Contains(r, "wrong title"):
+		return KeyWrongTitle
 
 	case strings.Contains(r, "bad_source") ||
 		strings.Contains(r, "all_candidates_bad_source"):
 		return KeyBadSource
 
-	case strings.Contains(r, "interrupted_by_restart"):
+	case strings.Contains(r, "interrupted_by_restart") ||
+		strings.Contains(r, "stale_worker") ||
+		strings.Contains(r, "too_many_failures"):
 		return KeyInterruptedByRestart
 
 	default:
