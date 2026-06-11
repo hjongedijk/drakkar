@@ -459,7 +459,7 @@ func parseXMLResults(body []byte) ([]SearchResult, error) {
 		}
 		for _, attr := range item.Attrs {
 			switch strings.ToLower(strings.TrimSpace(attr.Name)) {
-			case "indexer":
+			case "indexer", "hydraindexername":
 				result.Indexer = attr.Value
 			case "size":
 				var size int64
