@@ -1172,7 +1172,49 @@ func Router(status StatusService, queue QueueService, workflow WorkflowService, 
 
 	// VFS browser — returns empty; content is served via HTTP at /content/{id}/{filename}.
 	r.Get("/api/vfs", func(w http.ResponseWriter, r *http.Request) {
-		respondJSON(w, http.StatusOK, map[string]any{"path": "/", "entries": []any{}})
+		base := status.Status().FuseMountPath
+		if base == "" {
+			base = config.DefaultFuseMountPath
+		}
+		reqPath := strings.TrimSpace(r.URL.Query().Get("path"))
+		if reqPath == "" {
+			reqPath = "/"
+		}
+		// Prevent directory traversal by cleaning the path within the virtual root.
+		clean := "/" + strings.Trim(strings.ReplaceAll(reqPath, "..", ""), "/")
+		fullPath := base + clean
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				respondJSON(w, http.StatusOK, map[string]any{"path": clean, "entries": []any{}})
+				return
+			}
+			respondError(w, http.StatusInternalServerError, err)
+			return
+		}
+		type VFSEntry struct {
+			Name    string `json:"name"`
+			Path    string `json:"path"`
+			IsDir   bool   `json:"isDir"`
+			Size    int64  `json:"size"`
+		}
+		result := make([]VFSEntry, 0, len(entries))
+		for _, e := range entries {
+			entryPath := clean
+			if entryPath == "/" {
+				entryPath = "/" + e.Name()
+			} else {
+				entryPath = entryPath + "/" + e.Name()
+			}
+			size := int64(0)
+			if !e.IsDir() {
+				if info, err := e.Info(); err == nil {
+					size = info.Size()
+				}
+			}
+			result = append(result, VFSEntry{Name: e.Name(), Path: entryPath, IsDir: e.IsDir(), Size: size})
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"path": clean, "entries": result})
 	})
 	// Plex integration
 	r.Post("/api/plex/test", func(w http.ResponseWriter, r *http.Request) {

@@ -43,8 +43,16 @@
     { id: 'orphaned-completed-symlinks', label: 'Remove Orphaned History', description: 'Clean stale completed-symlink rows and files.', group: 'Maintenance', interval: '6h', manual: true, run: async () => { const r = await api.maintenance('orphaned-completed-symlinks'); return `deleted ${r.deletedFiles} symlinks`; } }
   ];
 
+  let schedulesLoading = true;
+
   async function loadSchedules() {
-    schedules = (await api.taskSchedules()).items ?? [];
+    try {
+      schedules = (await api.taskSchedules()).items ?? [];
+    } catch {
+      // silently ignore — UI shows "—" when schedules unavailable
+    } finally {
+      schedulesLoading = false;
+    }
   }
 
   async function runTask(task: TaskDef) {
@@ -78,6 +86,8 @@
 
   onMount(() => {
     void loadSchedules();
+    const t = window.setInterval(() => void loadSchedules(), 30000);
+    return () => window.clearInterval(t);
   });
 </script>
 
@@ -158,8 +168,10 @@
                   <span class="time-cell"><Clock3 size={12} /> {fmtTime(result.ranAt)}</span>
                 {:else if schedule?.lastRunAt}
                   <span class="time-cell"><Clock3 size={12} /> {fmtTime(schedule.lastRunAt)}</span>
+                {:else if schedulesLoading}
+                  <span class="time-cell dim">—</span>
                 {:else}
-                  Never
+                  <span class="time-cell dim">Never</span>
                 {/if}
               </td>
               <td>
@@ -255,6 +267,8 @@
     align-items: center;
     gap: 6px;
   }
+
+  .time-cell.dim { opacity: 0.4; }
 
   .result {
     margin-top: 10px;

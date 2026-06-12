@@ -959,18 +959,34 @@
   .reason-badge.reason-archive  { background: hsl(38 96% 55% / 0.15); color: hsl(38 100% 72%); }
 
   /* queue rules */
-  .queue-rules { display: grid; gap: 12px; margin-bottom: 14px; }
+  .queue-rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+  @media (max-width: 900px) { .queue-rules { grid-template-columns: 1fr; } }
   .rule-row { display: grid; gap: 6px; }
   .rule-label { color: hsl(var(--muted-foreground)); font-size: 13px; }
   .rule-row select, .pattern-box {
     width: 100%;
     padding: 10px 12px;
     border-radius: 12px;
-    border: 1px solid hsl(0 0% 100% / 0.08);
-    background: hsl(0 0% 100% / 0.03);
-    color: inherit;
+    border: 1px solid hsl(0 0% 100% / 0.15);
+    background: hsl(0 0% 100% / 0.06);
+    color: hsl(var(--foreground));
+    font-size: 13px;
+    cursor: pointer;
+    appearance: auto;
+    transition: border-color 0.15s, background 0.15s;
   }
-  .pattern-box { min-height: 160px; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .rule-row select:hover, .rule-row select:focus {
+    border-color: hsl(var(--primary) / 0.5);
+    background: hsl(0 0% 100% / 0.09);
+    outline: none;
+  }
+  .rule-row select option { background: hsl(215 36% 10%); }
+  .pattern-box {
+    min-height: 160px; resize: vertical;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    cursor: text;
+  }
+  .pattern-box:focus { border-color: hsl(var(--primary) / 0.5); outline: none; }
 
   /* maintenance */
   .maint-list { display: grid; gap: 10px; margin-bottom: 14px; }

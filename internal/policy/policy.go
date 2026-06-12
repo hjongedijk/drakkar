@@ -60,7 +60,7 @@ var defaultMatrix = map[FailureKey]Action{
 	KeyPublishFailed:         ActionRetryLater,         // FUSE publish issue → retry, don't abandon
 	KeySymlinkFailed:         ActionRetryLater,
 	KeyNoReleaseFound:        ActionDoNothing,          // nothing on indexers → wait for next cycle
-	KeyAllCandidatesRejected: ActionDoNothing,
+	KeyAllCandidatesRejected: ActionSearchAgain,
 	KeyBadSource:             ActionBlocklistAndSearch,
 	KeyWrongTitle:            ActionSearchAgain, // bad title match → retry search, don't blocklist valid NZBs
 	KeyInterruptedByRestart:  ActionSearchAgain, // was mid-fetch → retry same flow
