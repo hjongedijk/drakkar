@@ -45,6 +45,7 @@ var contentModTime = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 // ContentProvider is the database interface needed by the WebDAV handler.
 type ContentProvider interface {
 	ListContentMountEntries(ctx context.Context) ([]database.ContentMountEntry, error)
+	ListContentMountEntriesForRelease(ctx context.Context, selectedReleaseID int64) ([]database.ContentMountEntry, error)
 	OpenVirtualMediaFile(ctx context.Context, virtualFileID int64) (stream.VirtualMediaFile, error)
 	ListSymlinkPublications(ctx context.Context) ([]database.SymlinkPublication, error)
 }
@@ -321,16 +322,14 @@ func (f *contentFS) statContent(ctx context.Context, rest string) (os.FileInfo, 
 		if err != nil {
 			return nil, os.ErrNotExist
 		}
-		entries, err := f.db.ListContentMountEntries(ctx)
+		entries, err := f.db.ListContentMountEntriesForRelease(ctx, rid)
 		if err != nil {
 			return nil, err
 		}
-		for _, e := range entries {
-			if e.SelectedReleaseID == rid {
-				return &dirInfo{name: rest}, nil
-			}
+		if len(entries) == 0 {
+			return nil, os.ErrNotExist
 		}
-		return nil, os.ErrNotExist
+		return &dirInfo{name: rest}, nil
 	}
 	// /content/releases/{id}/{filename}
 	rid, err := strconv.ParseInt(rest[:slash], 10, 64)
@@ -338,12 +337,12 @@ func (f *contentFS) statContent(ctx context.Context, rest string) (os.FileInfo, 
 		return nil, os.ErrNotExist
 	}
 	filename := rest[slash+1:]
-	entries, err := f.db.ListContentMountEntries(ctx)
+	entries, err := f.db.ListContentMountEntriesForRelease(ctx, rid)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.SelectedReleaseID == rid && e.FileName == filename {
+		if e.FileName == filename {
 			return &fileInfo{name: e.FileName, size: e.SizeBytes}, nil
 		}
 	}
@@ -431,15 +430,13 @@ func (f *contentFS) openContent(ctx context.Context, rest string) (webdav.File, 
 		if err != nil {
 			return nil, os.ErrNotExist
 		}
-		entries, err := f.db.ListContentMountEntries(ctx)
+		entries, err := f.db.ListContentMountEntriesForRelease(ctx, rid)
 		if err != nil {
 			return nil, err
 		}
 		var kids []os.FileInfo
 		for _, e := range entries {
-			if e.SelectedReleaseID == rid {
-				kids = append(kids, &fileInfo{name: e.FileName, size: e.SizeBytes})
-			}
+			kids = append(kids, &fileInfo{name: e.FileName, size: e.SizeBytes})
 		}
 		if len(kids) == 0 {
 			return nil, os.ErrNotExist
@@ -455,12 +452,12 @@ func (f *contentFS) openContent(ctx context.Context, rest string) (webdav.File, 
 		return nil, os.ErrNotExist
 	}
 	filename := rest[slash+1:]
-	entries, err := f.db.ListContentMountEntries(ctx)
+	entries, err := f.db.ListContentMountEntriesForRelease(ctx, rid)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.SelectedReleaseID == rid && e.FileName == filename {
+		if e.FileName == filename {
 			vf, err := f.db.OpenVirtualMediaFile(ctx, e.VirtualFileID)
 			if err != nil {
 				return nil, err

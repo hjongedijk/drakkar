@@ -8,6 +8,27 @@ import (
 	"github.com/hjongedijk/drakkar/internal/stream"
 )
 
+func (db *DB) ListContentMountEntriesForRelease(ctx context.Context, selectedReleaseID int64) ([]ContentMountEntry, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		select vf.id, vf.selected_release_id, vf.path, vf.file_name, vf.size_bytes, vf.reader_kind
+		from virtual_files vf
+		where vf.selected_release_id = $1
+		order by vf.path asc`, selectedReleaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContentMountEntry
+	for rows.Next() {
+		var item ContentMountEntry
+		if err := rows.Scan(&item.VirtualFileID, &item.SelectedReleaseID, &item.Path, &item.FileName, &item.SizeBytes, &item.ReaderKind); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) ListContentMountEntries(ctx context.Context) ([]ContentMountEntry, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
 		select

@@ -19,6 +19,7 @@ type Repository interface {
 	ListReleaseSummaries(ctx context.Context, libraryItemID int64) ([]database.ReleaseSummary, error)
 	ListNZBMountEntries(ctx context.Context) ([]database.NZBMountEntry, error)
 	ListContentMountEntries(ctx context.Context) ([]database.ContentMountEntry, error)
+	ListContentMountEntriesForRelease(ctx context.Context, selectedReleaseID int64) ([]database.ContentMountEntry, error)
 	ListCompletedSymlinkEntries(ctx context.Context) ([]database.CompletedSymlinkEntry, error)
 	OpenVirtualMediaFile(ctx context.Context, virtualFileID int64) (stream.VirtualMediaFile, error)
 	CreateImportedNZB(ctx context.Context, imported database.ImportedNZB) (database.QueueSnapshot, error)
@@ -61,6 +62,10 @@ func (s *Service) ListNZBMountEntries(ctx context.Context) ([]database.NZBMountE
 
 func (s *Service) ListContentMountEntries(ctx context.Context) ([]database.ContentMountEntry, error) {
 	return s.repo.ListContentMountEntries(ctx)
+}
+
+func (s *Service) ListContentMountEntriesForRelease(ctx context.Context, selectedReleaseID int64) ([]database.ContentMountEntry, error) {
+	return s.repo.ListContentMountEntriesForRelease(ctx, selectedReleaseID)
 }
 
 func (s *Service) OpenVirtualMediaFile(ctx context.Context, virtualFileID int64) (stream.VirtualMediaFile, error) {
@@ -342,6 +347,16 @@ func (m *MemoryRepository) ListNZBMountEntries(ctx context.Context) ([]database.
 func (m *MemoryRepository) ListContentMountEntries(ctx context.Context) ([]database.ContentMountEntry, error) {
 	out := make([]database.ContentMountEntry, len(m.content))
 	copy(out, m.content)
+	return out, nil
+}
+
+func (m *MemoryRepository) ListContentMountEntriesForRelease(ctx context.Context, selectedReleaseID int64) ([]database.ContentMountEntry, error) {
+	var out []database.ContentMountEntry
+	for _, item := range m.content {
+		if item.SelectedReleaseID == selectedReleaseID {
+			out = append(out, item)
+		}
+	}
 	return out, nil
 }
 
