@@ -25,6 +25,18 @@ func compilePatterns(patterns []string) []*regexp.Regexp {
 
 // ── Compiled regexes (Radarr/Sonarr QualityParser.cs patterns) ─────────────
 
+// reStructuredRelease matches release names that have recognizable Usenet
+// release markers (year, resolution, season/episode, streaming source).
+// Titles that match are treated as readable — the title check applies even
+// when TrustSource=true. Titles that don't match (random-looking obfuscated
+// NZB subjects like "bGimprckUaaY.mkv") skip the title check as intended.
+var reStructuredRelease = regexp.MustCompile(
+	`(?i)(?:\b(?:19|20)\d{2}\b` + // year (1900–2099)
+		`|\b\d{3,4}[piP I]\b` + // resolution: 720p, 1080i, 2160p
+		`|\bS\d{1,2}E\d{1,2}\b` + // SxxExx episode marker
+		`|\bS\d{2}\b` + // season pack Sxx
+		`|\b(?:BluRay|WEB-DL|WEBRip|HDTV|AMZN|NF|DSNP|HULU|MAX|PCOK|ATVP|SHO)\b)`) // streaming source
+
 var (
 	// proper/repack — word-boundary aware, matches -PROPER, PROPER., repack2, rerip
 	reProper = regexp.MustCompile(`(?i)\b(proper)\b`)
@@ -150,7 +162,13 @@ func ScoreWithPreferences(candidate Candidate, required Requirements, prefs Pref
 	titleLower := strings.ToLower(candidate.Title)
 	requiredLower := strings.ToLower(required.Title)
 
-	if !required.TrustSource {
+	// Apply title check when NOT trusting the source, OR when the release title
+	// is structured (has year/season/resolution markers). Structured titles are
+	// readable — a wrong show name (e.g. "Reno 911" returned for a "9-1-1"
+	// TVDB-ID query) must be rejected even if the indexer said it was correct.
+	// Obfuscated NZB subjects (no markers) still bypass the check when
+	// TrustSource=true, because their filename conveys nothing about the content.
+	if !required.TrustSource || reStructuredRelease.MatchString(candidate.Title) {
 		matched := containsNormalized(titleLower, requiredLower)
 		for i := 0; i < len(required.AlternateTitles) && !matched; i++ {
 			matched = containsNormalized(titleLower, strings.ToLower(required.AlternateTitles[i]))
@@ -489,26 +507,63 @@ const (
 	episodeMismatch
 )
 
+// containsNormalized checks whether the required title words appear at the
+// start of the candidate title words (within 1-word franchise-prefix tolerance).
+// Word-prefix matching prevents substring false positives like "Lost" matching
+// "Secrets.of.The.Lost.Liners", while still allowing "DCs.Legends.of.Tomorrow"
+// to match "DC's Legends of Tomorrow" (one franchise-prefix word difference).
+// Leading articles ("the", "a", "an") are stripped and retried from both sides.
 func containsNormalized(title, required string) bool {
-	n := normalizeText(title)
-	r := normalizeText(required)
-	if strings.Contains(n, r) {
+	cWords := strings.Fields(normalizeText(title))
+	rWords := strings.Fields(normalizeText(required))
+	if titlesWordMatch(cWords, rWords) {
 		return true
 	}
-	// Radarr strips leading articles ("the", "a", "an") from both sides.
-	// Many releases drop the article that appears in the metadata title (or
-	// vice versa), e.g. "Batman 2022" vs required "The Batman". Re-try with
-	// the leading article removed so these aren't wrongly rejected.
-	return strings.Contains(stripLeadingArticle(n), stripLeadingArticle(r))
-}
-
-func stripLeadingArticle(text string) string {
-	for _, art := range []string{"the ", "a ", "an "} {
-		if strings.HasPrefix(text, art) {
-			return text[len(art):]
+	// Strip leading article from candidate and retry
+	if len(cWords) > 0 && isLeadingArticle(cWords[0]) {
+		if titlesWordMatch(cWords[1:], rWords) {
+			return true
 		}
 	}
-	return text
+	// Strip leading article from required title and retry (both with and without candidate article)
+	if len(rWords) > 0 && isLeadingArticle(rWords[0]) {
+		stripped := rWords[1:]
+		if titlesWordMatch(cWords, stripped) {
+			return true
+		}
+		if len(cWords) > 0 && isLeadingArticle(cWords[0]) {
+			return titlesWordMatch(cWords[1:], stripped)
+		}
+	}
+	return false
+}
+
+// titlesWordMatch returns true if rWords appear at the beginning of cWords,
+// allowing up to 1 extra prefix word in cWords (e.g. "Marvels" before "Agents").
+func titlesWordMatch(cWords, rWords []string) bool {
+	if len(rWords) == 0 {
+		return true
+	}
+	for offset := 0; offset < 2; offset++ {
+		if offset+len(rWords) > len(cWords) {
+			break
+		}
+		ok := true
+		for i, rw := range rWords {
+			if cWords[offset+i] != rw {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isLeadingArticle(word string) bool {
+	return word == "the" || word == "a" || word == "an"
 }
 
 func normalizeText(value string) string {
