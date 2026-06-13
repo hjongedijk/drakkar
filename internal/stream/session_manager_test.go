@@ -64,9 +64,17 @@ func TestReadAheadManagerSeekCancelsPreviousRequest(t *testing.T) {
 		t.Fatal("expected first request context to cancel on seek")
 	}
 
-	second := <-fetcher.calls
-	if second.segment.RangeStart != 64 || second.segment.RangeEnd != 96 {
-		t.Fatalf("unexpected second range %#v", second.segment)
+	// Seek only cancels — it does not schedule a new window immediately.
+	// The FUSE handle calls NotifyRead after the interactive read completes.
+	manager.NotifyRead("stream-2", 64)
+
+	select {
+	case second := <-fetcher.calls:
+		if second.segment.RangeStart != 64 || second.segment.RangeEnd != 96 {
+			t.Fatalf("unexpected second range %#v", second.segment)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for read-ahead after seek+NotifyRead")
 	}
 	manager.Stop("stream-2")
 }
