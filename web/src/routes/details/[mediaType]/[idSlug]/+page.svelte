@@ -5,13 +5,15 @@
   import Languages from '@lucide/svelte/icons/languages';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Tv from '@lucide/svelte/icons/tv';
+  import Download from '@lucide/svelte/icons/download';
+  import X from '@lucide/svelte/icons/x';
   import Button from '$lib/components/Button.svelte';
   import PosterCard from '$lib/components/PosterCard.svelte';
   import StatusPill from '$lib/components/StatusPill.svelte';
   import { api } from '$lib/api';
   import { idFromSlug } from '$lib/detailsHref';
   import { toastError, toastSuccess } from '$lib/toast';
-  import type { DiscoverDetails, GrabHistoryEntry, LibraryDetail, LibraryItem, SubtitleCandidate, SubtitleFile } from '$lib/types';
+  import type { DiscoverDetails, GrabHistoryEntry, LibraryDetail, LibraryItem, ReleaseItem, SubtitleCandidate, SubtitleFile } from '$lib/types';
 
   let detail: DiscoverDetails | null = null;
   let libraryMatch: LibraryItem | null = null;
@@ -19,9 +21,33 @@
   let subtitles: SubtitleFile[] = [];
   let subtitleCandidates: SubtitleCandidate[] = [];
   let grabHistory: GrabHistoryEntry[] = [];
+  let releaseCandidates: ReleaseItem[] = [];
+  let showReleasePicker = false;
   let loading = true;
   let working = false;
   let activeKey = '';
+
+  function fmtBytes(b: number): string {
+    if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+    return Math.round(b / 1e6) + ' MB';
+  }
+
+  function qualityTags(title: string): string[] {
+    const rules: [RegExp, string][] = [
+      [/\b2160p\b/i, '2160p'], [/\b4k\b/i, '4K'], [/\b1080p\b/i, '1080p'],
+      [/\b720p\b/i, '720p'], [/\b480p\b/i, '480p'],
+      [/bluray|bdremux|bdrip/i, 'BluRay'], [/\bweb[- ]?dl\b/i, 'WEB-DL'],
+      [/\bwebrip\b/i, 'WEBRip'], [/hevc|x265|h\.265/i, 'x265'],
+      [/\bx264\b|h\.264/i, 'x264'], [/\bhdr\b/i, 'HDR'],
+      [/dolby.?vision|\bDV\b/, 'DV'],
+    ];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const [re, label] of rules) {
+      if (re.test(title) && !seen.has(label)) { seen.add(label); out.push(label); }
+    }
+    return out;
+  }
 
   function normalizeTitle(value: string) {
     return value.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
@@ -90,10 +116,26 @@
   async function runLocalSearch() {
     if (!libraryMatch) return;
     working = true;
+    releaseCandidates = [];
     try {
-      const result = await api.searchLibrary(libraryMatch.id);
-      toastSuccess(`search candidates=${result.candidateCount}`);
+      await api.searchLibrary(libraryMatch.id);
+      const result = await api.releases(libraryMatch.id);
+      releaseCandidates = (result.items ?? []).sort((a, b) => b.score - a.score);
+      showReleasePicker = true;
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : String(error));
+    } finally {
+      working = false;
+    }
+  }
+
+  async function pickRelease(candidateId: number) {
+    working = true;
+    try {
+      await api.selectRelease(candidateId);
+      showReleasePicker = false;
       await loadDetail();
+      toastSuccess('Release selected');
     } catch (error) {
       toastError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -422,6 +464,46 @@
   <div class="empty">No details found.</div>
 {/if}
 
+{#if showReleasePicker}
+  <div class="modal-backdrop" on:click={() => (showReleasePicker = false)} role="presentation">
+    <div class="rel-modal" on:click|stopPropagation role="dialog" aria-modal="true" aria-label="Select release">
+      <div class="rel-header">
+        <h2>Select Release</h2>
+        <button class="close-btn" on:click={() => (showReleasePicker = false)} aria-label="Close">
+          <X size={18} />
+        </button>
+      </div>
+      {#if releaseCandidates.length === 0}
+        <div class="rel-empty">No candidates found.</div>
+      {:else}
+        <div class="rel-list">
+          {#each releaseCandidates as c}
+            {@const tags = qualityTags(c.title)}
+            <div class="rel-row" class:rel-selected={c.selected} class:rel-rejected={c.rejected && !c.selected}>
+              <div class="rel-info">
+                <div class="rel-title">{c.title}</div>
+                <div class="rel-meta">
+                  {#if c.indexerName}<span class="rel-pill">{c.indexerName}</span>{/if}
+                  <span class="rel-pill mono">{fmtBytes(c.sizeBytes)}</span>
+                  <span class="rel-pill mono">score {c.score}</span>
+                  {#each tags as tag}<span class="rel-pill rel-quality">{tag}</span>{/each}
+                  {#if c.selected}<span class="rel-pill rel-pill-ok">selected</span>{/if}
+                  {#if c.rejected && !c.selected}<span class="rel-pill rel-pill-danger">{c.rejectReason || 'rejected'}</span>{/if}
+                  {#if c.failureCount > 0}<span class="rel-pill rel-pill-warn">{c.failureCount}× failed</span>{/if}
+                </div>
+              </div>
+              <Button kind={c.selected ? 'primary' : 'secondary'} on:click={() => pickRelease(c.releaseCandidateId)} disabled={working}>
+                <Download size={14} />
+                {c.selected ? 'Re-grab' : 'Download'}
+              </Button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <style>
   .page { display: grid; gap: 22px; }
   .hero {
@@ -551,4 +633,51 @@
   .monitoring-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid hsl(0 0% 100% / 0.06); }
   .monitoring-row label { font-size: 12px; font-weight: 600; color: hsl(var(--muted-foreground)); white-space: nowrap; }
   .monitoring-row select { flex: 1; min-width: 0; height: 32px; border-radius: 8px; border: 1px solid hsl(0 0% 100% / 0.1); background: hsl(0 0% 100% / 0.05); color: inherit; font-size: 12px; padding: 0 8px; cursor: pointer; }
+
+  /* Release picker modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 900;
+    background: hsl(0 0% 0% / 0.65); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .rel-modal {
+    background: hsl(var(--card)); border: 1px solid hsl(0 0% 100% / 0.1);
+    border-radius: 24px; width: 100%; max-width: 780px;
+    max-height: 82vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .rel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 22px 16px; border-bottom: 1px solid hsl(0 0% 100% / 0.07); flex-shrink: 0;
+  }
+  .rel-header h2 { margin: 0; font-size: 18px; }
+  .close-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 10px;
+    border: 1px solid hsl(0 0% 100% / 0.08); background: transparent;
+    color: hsl(var(--muted-foreground)); cursor: pointer;
+  }
+  .close-btn:hover { background: hsl(0 0% 100% / 0.06); color: hsl(var(--foreground)); }
+  .rel-list { overflow-y: auto; padding: 12px; display: grid; gap: 8px; }
+  .rel-empty { padding: 36px; text-align: center; color: hsl(var(--muted-foreground)); font-size: 14px; }
+  .rel-row {
+    display: flex; align-items: flex-start; gap: 14px; padding: 14px 16px;
+    border-radius: 16px; border: 1px solid hsl(0 0% 100% / 0.06);
+    background: hsl(0 0% 100% / 0.03);
+  }
+  .rel-row:hover { background: hsl(0 0% 100% / 0.055); }
+  .rel-selected { border-color: hsl(var(--primary) / 0.4); background: hsl(var(--primary) / 0.06); }
+  .rel-rejected { opacity: 0.5; }
+  .rel-info { flex: 1; min-width: 0; display: grid; gap: 7px; }
+  .rel-title { font-size: 13px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+  .rel-meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .rel-pill {
+    font-size: 11px; padding: 2px 7px; border-radius: 6px;
+    background: hsl(0 0% 100% / 0.07); border: 1px solid hsl(0 0% 100% / 0.09);
+    color: hsl(var(--muted-foreground)); white-space: nowrap;
+  }
+  .rel-pill.mono { font-family: 'JetBrains Mono', monospace; }
+  .rel-quality { color: hsl(var(--foreground) / 0.85); font-weight: 600; }
+  .rel-pill-ok { background: hsl(142 70% 45% / 0.15); border-color: hsl(142 70% 45% / 0.3); color: hsl(142 60% 55%); font-weight: 600; }
+  .rel-pill-danger { background: hsl(0 70% 50% / 0.15); border-color: hsl(0 70% 50% / 0.25); color: hsl(0 70% 60%); }
+  .rel-pill-warn { background: hsl(40 90% 50% / 0.15); border-color: hsl(40 90% 50% / 0.25); color: hsl(40 80% 60%); }
 </style>
