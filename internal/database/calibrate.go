@@ -155,7 +155,7 @@ func (db *DB) CalibrateNZBOffsets(ctx context.Context, nzbDocumentID int64) erro
 				slog.Warn("calibrate: could not fetch last segment", "nzb_file_id", f.id, "err", err)
 			}
 		}
-		if err := db.rescaleFileSegments(ctx, f.id, f.estFirstSize, actualFirst, f.estLastSize, actualLast); err != nil {
+		if err := db.rescaleFileSegments(ctx, f.id, actualFirst, actualLast); err != nil {
 			return fmt.Errorf("rescale nzb_file %d: %w", f.id, err)
 		}
 		slog.Info("calibrate: corrected segment offsets",
@@ -173,7 +173,7 @@ func (db *DB) CalibrateNZBOffsets(ctx context.Context, nzbDocumentID int64) erro
 // final segment — using the real value avoids the file-size overestimation that
 // causes Plex to seek past the real end of file (mirrors nzbdav's behaviour of
 // fetching the last segment's yEnc header for an exact total size).
-func (db *DB) rescaleFileSegments(ctx context.Context, nzbFileID, estFirstSize, actualFirstSize, estLastSize, actualLastSize int64) error {
+func (db *DB) rescaleFileSegments(ctx context.Context, nzbFileID, actualFirstSize, actualLastSize int64) error {
 	tx, err := db.SQL.BeginTx(ctx, nil)
 	if err != nil {
 		return err
