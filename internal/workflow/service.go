@@ -2361,7 +2361,9 @@ func (s *Service) ManualSearch(ctx context.Context, query string) ([]ManualSearc
 			Indexer:    r.Indexer,
 			UploadedAt: r.PublishedAt,
 		}
-		result := ranking.Score(candidate, ranking.Requirements{})
+		result := ranking.ScoreWithPreferences(candidate, ranking.Requirements{}, ranking.Preferences{
+			CustomFormats: s.loadCustomFormats(ctx),
+		})
 		out = append(out, ManualSearchItem{
 			Title:      r.Title,
 			ExternalURL: r.Link,
