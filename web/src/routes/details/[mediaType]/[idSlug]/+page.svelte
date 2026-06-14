@@ -11,9 +11,10 @@
   import Button from '$lib/components/Button.svelte';
   import PosterCard from '$lib/components/PosterCard.svelte';
   import StatusPill from '$lib/components/StatusPill.svelte';
-  import { api } from '$lib/api';
+  import { api, subscribeEvents } from '$lib/api';
   import { idFromSlug } from '$lib/detailsHref';
   import { toastError, toastSuccess } from '$lib/toast';
+  import { onMount } from 'svelte';
   import type { DiscoverDetails, GrabHistoryEntry, LibraryDetail, LibraryItem, QualityProfile, ReleaseItem, SubtitleCandidate, SubtitleFile } from '$lib/types';
 
   let detail: DiscoverDetails | null = null;
@@ -27,6 +28,8 @@
   let activeProfileId: number | null = null;
   let showReleasePicker = false;
   let pickerLabel = '';
+  let pickerLibraryItemID: number | null = null;
+  let pickerSearching = false;
   let loading = true;
   let working = false;
   let activeKey = '';
@@ -133,16 +136,35 @@
     }
   }
 
+  onMount(() => {
+    return subscribeEvents((event) => {
+      if (!event) return;
+      if (event.kind === 'library.replacements' && event.libraryItemId === pickerLibraryItemID) {
+        // Background search completed — refresh candidates and clear searching indicator
+        api.releases(pickerLibraryItemID as number).then((r) => {
+          releaseCandidates = (r.items ?? []).sort((a, b) => b.score - a.score);
+          pickerSearching = false;
+        }).catch(() => { pickerSearching = false; });
+      }
+      if (event.kind === 'subtitle.search' && event.libraryItemId === libraryMatch?.id) {
+        void loadDetail();
+      }
+    });
+  });
+
   async function openReleasePicker(libraryItemID: number, label: string) {
     working = true;
     releaseCandidates = [];
     pickerLabel = label;
+    pickerLibraryItemID = libraryItemID;
+    pickerSearching = true;
     try {
       const result = await api.replacementCandidates(libraryItemID);
       releaseCandidates = (result.items ?? []).sort((a, b) => b.score - a.score);
       showReleasePicker = true;
     } catch (error) {
       toastError(error instanceof Error ? error.message : String(error));
+      pickerSearching = false;
     } finally {
       working = false;
     }
@@ -207,9 +229,8 @@
     if (!itemId) return;
     working = true;
     try {
-      const result = await api.searchSubtitles(itemId, ['nl', 'en']);
-      toastSuccess(`subtitle candidates=${result.candidateCount}`);
-      await loadDetail();
+      await api.searchSubtitles(itemId, ['nl', 'en']);
+      toastSuccess('Searching subtitles in background...');
     } catch (error) {
       toastError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -603,9 +624,12 @@
           <X size={18} />
         </button>
       </div>
-      {#if releaseCandidates.length === 0}
+      {#if pickerSearching}
+        <div class="rel-empty">Searching for releases…</div>
+      {/if}
+      {#if releaseCandidates.length === 0 && !pickerSearching}
         <div class="rel-empty">No candidates found.</div>
-      {:else}
+      {:else if releaseCandidates.length > 0}
         <div class="rel-list">
           {#each releaseCandidates as c}
             {@const tags = qualityTags(c.title)}

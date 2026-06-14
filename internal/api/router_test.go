@@ -688,7 +688,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	pendingReq := httptest.NewRequest(http.MethodPost, "/api/library/search-pending", nil)
 	pendingRec := httptest.NewRecorder()
 	router.ServeHTTP(pendingRec, pendingReq)
-	if pendingRec.Code != http.StatusAccepted || !strings.Contains(pendingRec.Body.String(), `"processed":2`) {
+	if pendingRec.Code != http.StatusAccepted || !strings.Contains(pendingRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected pending search response %d %s", pendingRec.Code, pendingRec.Body.String())
 	}
 
@@ -716,7 +716,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	searchReq := httptest.NewRequest(http.MethodPost, "/api/library/42/search", nil)
 	searchRec := httptest.NewRecorder()
 	router.ServeHTTP(searchRec, searchReq)
-	if searchRec.Code != http.StatusAccepted || !strings.Contains(searchRec.Body.String(), `"candidateCount":3`) {
+	if searchRec.Code != http.StatusAccepted || !strings.Contains(searchRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected search response %d %s", searchRec.Code, searchRec.Body.String())
 	}
 
@@ -765,7 +765,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	republishPendingReq := httptest.NewRequest(http.MethodPost, "/api/library/republish-pending", nil)
 	republishPendingRec := httptest.NewRecorder()
 	router.ServeHTTP(republishPendingRec, republishPendingReq)
-	if republishPendingRec.Code != http.StatusAccepted || !strings.Contains(republishPendingRec.Body.String(), `"processed":2`) {
+	if republishPendingRec.Code != http.StatusAccepted || !strings.Contains(republishPendingRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected bulk republish response %d %s", republishPendingRec.Code, republishPendingRec.Body.String())
 	}
 
@@ -800,7 +800,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	subtitleSearchReq := httptest.NewRequest(http.MethodPost, "/api/subtitles/42/search", strings.NewReader(`{"languages":["en"]}`))
 	subtitleSearchRec := httptest.NewRecorder()
 	router.ServeHTTP(subtitleSearchRec, subtitleSearchReq)
-	if subtitleSearchRec.Code != http.StatusAccepted || !strings.Contains(subtitleSearchRec.Body.String(), `"candidateCount":1`) {
+	if subtitleSearchRec.Code != http.StatusAccepted || !strings.Contains(subtitleSearchRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected subtitle search response %d %s", subtitleSearchRec.Code, subtitleSearchRec.Body.String())
 	}
 
@@ -1001,7 +1001,7 @@ func TestSearchUpgradesEndpoint(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"upgraded":2`) {
+	if !strings.Contains(rec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected response %s", rec.Body.String())
 	}
 }

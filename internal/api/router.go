@@ -713,13 +713,15 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.SearchUpgrades(r.Context())
-		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
-			return
-		}
-		publishMutation("library.search_upgrades", map[string]any{"checked": result.Checked, "upgraded": result.Upgraded, "failed": result.Failed})
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := workflowSvc.SearchUpgrades(context.Background())
+			if err != nil {
+				slog.Error("search upgrades background", "err", err)
+				return
+			}
+			publishMutation("library.search_upgrades", map[string]any{"checked": result.Checked, "upgraded": result.Upgraded, "failed": result.Failed})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Get("/api/library/missing", func(w http.ResponseWriter, r *http.Request) {
 		items, err := queue.ListLibraryItems(r.Context())
@@ -745,22 +747,30 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		search, err := workflowSvc.SearchLibrary(r.Context(), libraryItemID)
-		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
-			return
-		}
+		// Start search in background; return existing candidates immediately so the
+		// release picker opens without waiting for the full NZB search round-trip.
+		go func() {
+			search, searchErr := workflowSvc.SearchLibrary(context.Background(), libraryItemID)
+			if searchErr != nil {
+				slog.Warn("search replacements background", "library_item_id", libraryItemID, "err", searchErr)
+			}
+			items, err := queue.ListReleaseSummaries(context.Background(), libraryItemID)
+			if err != nil {
+				slog.Error("replacements list background", "library_item_id", libraryItemID, "err", err)
+				return
+			}
+			publishMutation("library.replacements", map[string]any{"libraryItemId": libraryItemID, "candidateCount": len(items), "selectedReleaseId": search.SelectedReleaseID})
+		}()
 		items, err := queue.ListReleaseSummaries(r.Context(), libraryItemID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
 		}
-		publishMutation("library.replacements", map[string]any{"libraryItemId": libraryItemID, "candidateCount": len(items), "selectedReleaseId": search.SelectedReleaseID})
 		respondJSON(w, http.StatusAccepted, map[string]any{
-			"libraryItemId":     libraryItemID,
-			"candidateCount":    len(items),
-			"selectedReleaseId": search.SelectedReleaseID,
-			"items":             items,
+			"libraryItemId":  libraryItemID,
+			"candidateCount": len(items),
+			"items":          items,
+			"searching":      true,
 		})
 	})
 	r.Get("/api/releases/{libraryItemId}", func(w http.ResponseWriter, r *http.Request) {
@@ -826,13 +836,16 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&payload)
 		}
-		result, err := subtitleSvc.SearchCandidates(r.Context(), libraryItemID, payload.Languages)
-		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
-			return
-		}
-		publishMutation("subtitle.search", map[string]any{"libraryItemId": libraryItemID, "candidateCount": result.CandidateCount})
-		respondJSON(w, http.StatusAccepted, result)
+		languages := payload.Languages
+		go func() {
+			result, err := subtitleSvc.SearchCandidates(context.Background(), libraryItemID, languages)
+			if err != nil {
+				slog.Warn("subtitle search background", "library_item_id", libraryItemID, "err", err)
+				return
+			}
+			publishMutation("subtitle.search", map[string]any{"libraryItemId": libraryItemID, "candidateCount": result.CandidateCount})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true, "libraryItemId": libraryItemID})
 	})
 	r.Post("/api/subtitles/{libraryItemId}/upload", func(w http.ResponseWriter, r *http.Request) {
 		if subtitleSvc == nil {
@@ -1102,13 +1115,15 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.SearchPendingLibrary(r.Context())
-		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
-			return
-		}
-		publishMutation("library.search_pending", map[string]any{"processed": result.Processed, "searched": result.Searched, "selected": result.Selected, "failed": result.Failed})
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := workflowSvc.SearchPendingLibrary(context.Background())
+			if err != nil {
+				slog.Error("search pending background", "err", err)
+				return
+			}
+			publishMutation("library.search_pending", map[string]any{"processed": result.Processed, "searched": result.Searched, "selected": result.Selected, "failed": result.Failed})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/library/{id}/search", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {
@@ -1120,13 +1135,15 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.SearchLibrary(r.Context(), id)
-		if err != nil {
-			respondError(w, http.StatusBadGateway, err)
-			return
-		}
-		publishMutation("library.search", map[string]any{"libraryItemId": id, "candidateCount": result.CandidateCount, "selectedReleaseId": result.SelectedReleaseID})
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := workflowSvc.SearchLibrary(context.Background(), id)
+			if err != nil {
+				slog.Warn("search library background", "library_item_id", id, "err", err)
+				return
+			}
+			publishMutation("library.search", map[string]any{"libraryItemId": id, "candidateCount": result.CandidateCount, "selectedReleaseId": result.SelectedReleaseID})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/library/{id}/reset", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {

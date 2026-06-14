@@ -31,8 +31,8 @@
   const tasks: TaskDef[] = [
     { id: 'seerr_sync', label: 'Sync Seerr Requests', description: 'Import new and updated requests from Seerr.', group: 'Indexing', interval: '10m', manual: true, run: async () => { const r = await api.syncRequests(); return `seen ${r.seen}, created ${r.created}`; } },
     { id: 'pending_queue_push', label: 'Dispatch Pending Queue', description: 'Push pending library rows into the bounded background work queue.', group: 'Indexing', interval: '20m', manual: false, run: async () => '' },
-    { id: 'search-pending', label: 'Search Pending Items', description: 'Search missing library items in bounded batches.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { const r = await api.searchPendingLibrary(); return `processed ${r.processed}, searched ${r.searched}, selected ${r.selected}`; } },
-    { id: 'search_upgrades', label: 'Search Quality Upgrades', description: 'Re-search available items whose quality profile allows upgrades and replace them when a better release is found.', group: 'Indexing', interval: '6h', manual: true, run: async () => { const r = await api.searchUpgrades(); return `checked ${r.checked}, upgraded ${r.upgraded}, failed ${r.failed}`; } },
+    { id: 'search-pending', label: 'Search Pending Items', description: 'Search missing library items in bounded batches.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { await api.searchPendingLibrary(); return 'started in background'; } },
+    { id: 'search_upgrades', label: 'Search Quality Upgrades', description: 'Re-search available items whose quality profile allows upgrades and replace them when a better release is found.', group: 'Indexing', interval: '6h', manual: true, run: async () => { await api.searchUpgrades(); return 'started in background'; } },
     { id: 'retry_failed_queue', label: 'Retry Failed Queue', description: 'Retry failed queue rows using current fallback policy.', group: 'Indexing', interval: '30m', manual: true, run: async () => { const r = await api.retryFailedQueue(); return `processed ${r.processed}, retried ${r.retried}`; } },
     { id: 'republish_pending', label: 'Republish Pending', description: 'Republish library items with a selected release but no current publication.', group: 'Publishing', interval: '30m', manual: true, run: async () => { await api.republishPendingLibrary(); return 'started in background'; } },
     { id: 'reset_orphaned_available', label: 'Reset Orphaned Available Items', description: 'Reset available items with no symlink and no recoverable source back to pending so they are re-searched and re-downloaded.', group: 'Publishing', interval: 'Manual', manual: true, run: async () => { await api.resetOrphanedAvailableItems(); return 'started in background'; } },
@@ -91,6 +91,8 @@
   const backgroundKinds: Record<string, (e: Record<string, unknown>) => string> = {
     'library.republish_pending': (e) => `Republish Pending complete: processed ${e.processed}, republished ${e.republished}, failed ${e.failed}`,
     'library.reset_orphaned': (e) => `Reset Orphaned complete: found ${e.found}, reset ${e.reset}, failed ${e.failed}`,
+    'library.search_pending': (e) => `Search Pending complete: processed ${e.processed}, searched ${e.searched}, selected ${e.selected}`,
+    'library.search_upgrades': (e) => `Search Upgrades complete: checked ${e.checked}, upgraded ${e.upgraded}, failed ${e.failed}`,
   };
 
   onMount(() => {
