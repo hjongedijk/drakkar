@@ -7,6 +7,7 @@
   import Tv from '@lucide/svelte/icons/tv';
   import Download from '@lucide/svelte/icons/download';
   import X from '@lucide/svelte/icons/x';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Button from '$lib/components/Button.svelte';
   import PosterCard from '$lib/components/PosterCard.svelte';
   import StatusPill from '$lib/components/StatusPill.svelte';
@@ -23,6 +24,7 @@
   let grabHistory: GrabHistoryEntry[] = [];
   let releaseCandidates: ReleaseItem[] = [];
   let showReleasePicker = false;
+  let pickerLabel = '';
   let loading = true;
   let working = false;
   let activeKey = '';
@@ -113,13 +115,13 @@
     }
   }
 
-  async function runLocalSearch() {
-    if (!libraryMatch) return;
+  async function openReleasePicker(libraryItemID: number, label: string) {
     working = true;
     releaseCandidates = [];
+    pickerLabel = label;
     try {
-      await api.searchLibrary(libraryMatch.id);
-      const result = await api.releases(libraryMatch.id);
+      await api.searchLibrary(libraryItemID);
+      const result = await api.releases(libraryItemID);
       releaseCandidates = (result.items ?? []).sort((a, b) => b.score - a.score);
       showReleasePicker = true;
     } catch (error) {
@@ -129,6 +131,17 @@
     }
   }
 
+  async function runLocalSearch() {
+    if (!libraryMatch) return;
+    const label = detail?.title ?? 'this item';
+    return openReleasePicker(libraryMatch.id, label);
+  }
+
+  async function runEpisodeSearch(epLibraryItemId: number, season: number, episode: number, title: string) {
+    const label = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}${title ? ` · ${title}` : ''}`;
+    return openReleasePicker(epLibraryItemId, label);
+  }
+
   async function pickRelease(candidateId: number) {
     working = true;
     try {
@@ -136,6 +149,20 @@
       showReleasePicker = false;
       await loadDetail();
       toastSuccess('Release selected');
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : String(error));
+    } finally {
+      working = false;
+    }
+  }
+
+  async function resetItem(targetLibraryItemId: number, label: string) {
+    if (!confirm(`Reset "${label}"?\n\nThis removes the symlink and re-queues the item from scratch.`)) return;
+    working = true;
+    try {
+      await api.resetLibraryItem(targetLibraryItemId);
+      await loadDetail();
+      toastSuccess('Item reset — re-queued');
     } catch (error) {
       toastError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -234,6 +261,10 @@
                 <RotateCcw size={15} />
                 Republish
               </Button>
+              <Button kind="ghost" on:click={() => resetItem(libraryMatch!.id, detail?.title ?? 'this item')} disabled={working}>
+                <Trash2 size={15} />
+                Reset
+              </Button>
             {/if}
             <a class="link-btn secondary" href="/search">Back To Search</a>
             <Button kind="ghost" on:click={loadDetail} disabled={working || loading}>
@@ -283,14 +314,28 @@
                         </div>
                         <div class="ep-right">
                           <StatusPill tone={episode.status === 'available' ? 'ok' : 'neutral'}>{episode.status}</StatusPill>
-                          {#if episode.status === 'available' && episode.libraryItemId}
+                          {#if episode.libraryItemId}
                             {@const epId = episode.libraryItemId}
                             <button
                               class="ep-sub-btn"
-                              title="Download subtitle for this episode"
+                              title="Search releases for this episode"
                               disabled={working}
-                              on:click={() => runSubtitleSearch(epId)}
-                            >🌐 Subs</button>
+                              on:click={() => runEpisodeSearch(epId, episode.seasonNumber, episode.episodeNumber, episode.title)}
+                            ><Search size={11} /> Search</button>
+                            {#if episode.status === 'available'}
+                              <button
+                                class="ep-sub-btn"
+                                title="Download subtitle for this episode"
+                                disabled={working}
+                                on:click={() => runSubtitleSearch(epId)}
+                              >🌐 Subs</button>
+                              <button
+                                class="ep-sub-btn ep-reset-btn"
+                                title="Reset this episode"
+                                disabled={working}
+                                on:click={() => resetItem(epId, `S${String(episode.seasonNumber).padStart(2,'0')}E${String(episode.episodeNumber).padStart(2,'0')} ${episode.title}`)}
+                              ><Trash2 size={11} /></button>
+                            {/if}
                           {/if}
                         </div>
                       </div>
@@ -468,7 +513,7 @@
   <div class="modal-backdrop" on:click={() => (showReleasePicker = false)} role="presentation">
     <div class="rel-modal" on:click|stopPropagation role="dialog" aria-modal="true" aria-label="Select release">
       <div class="rel-header">
-        <h2>Select Release</h2>
+        <h2>Select Release{#if pickerLabel} <span class="picker-ctx">— {pickerLabel}</span>{/if}</h2>
         <button class="close-btn" on:click={() => (showReleasePicker = false)} aria-label="Close">
           <X size={18} />
         </button>
@@ -597,6 +642,8 @@
     font-size: 11px; cursor: pointer; flex-shrink: 0;
   }
   .ep-sub-btn:hover { background: hsl(var(--primary) / 0.15); color: hsl(var(--primary)); border-color: hsl(var(--primary) / 0.3); }
+  .ep-reset-btn:hover { background: hsl(0 70% 50% / 0.15); color: hsl(0 70% 60%); border-color: hsl(0 70% 50% / 0.3); }
+  .picker-ctx { font-size: 14px; font-weight: 400; color: hsl(var(--muted-foreground)); }
   .media-strip { padding-bottom: 4px; }
   .person-slot { width: 146px; flex: 0 0 auto; }
   .poster-slot { width: 146px; flex: 0 0 auto; }

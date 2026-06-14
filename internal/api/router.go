@@ -113,6 +113,7 @@ type WorkflowService interface {
 	FillMissingEpisodes(ctx context.Context) (workflow.FillMissingEpisodesResult, error)
 	ManualSearch(ctx context.Context, query string) ([]workflow.ManualSearchItem, error)
 	ImportNZBFromPush(ctx context.Context, content []byte, filename, mediaType string) (string, error)
+	ResetLibraryItem(ctx context.Context, libraryItemID int64) error
 }
 
 type PublicationService interface {
@@ -841,6 +842,23 @@ func Router(status StatusService, queue QueueService, workflow WorkflowService, 
 		}
 		publishMutation("library.search", map[string]any{"libraryItemId": id, "candidateCount": result.CandidateCount, "selectedReleaseId": result.SelectedReleaseID})
 		respondJSON(w, http.StatusAccepted, result)
+	})
+	r.Post("/api/library/{id}/reset", func(w http.ResponseWriter, r *http.Request) {
+		if workflow == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
+			return
+		}
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := workflow.ResetLibraryItem(r.Context(), id); err != nil {
+			respondError(w, http.StatusBadGateway, err)
+			return
+		}
+		publishMutation("library.reset", map[string]any{"libraryItemId": id})
+		respondJSON(w, http.StatusOK, map[string]any{"libraryItemId": id})
 	})
 	r.Post("/api/releases/{id}/select", func(w http.ResponseWriter, r *http.Request) {
 		if workflow == nil {

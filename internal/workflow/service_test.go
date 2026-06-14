@@ -318,6 +318,10 @@ func (r *repoStub) ListSabHistoryItems(_ context.Context, _ string, _, _ int) ([
 	return nil, 0, nil
 }
 func (r *repoStub) DismissSabItems(_ context.Context, _ []int64) error { return nil }
+func (r *repoStub) DeleteSymlinkPublicationsForLibraryItem(_ context.Context, _ int64) ([]string, error) {
+	return nil, nil
+}
+func (r *repoStub) ResetLibraryItemState(_ context.Context, _ int64) error { return nil }
 
 type seerrStub struct {
 	requests []seerr.Request

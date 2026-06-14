@@ -1940,6 +1940,62 @@ func (db *DB) ClearQueueSelectedRelease(ctx context.Context, queueItemID int64) 
 	return tx.Commit()
 }
 
+// ResetLibraryItemState wipes the selected_release (and its cascading NZB data)
+// for the library item's queue entry, resets the queue state back to 'requested',
+// and marks the library item as unavailable so it re-enters the normal search cycle.
+// It does NOT touch symlink_publications or the filesystem — the caller is responsible
+// for removing symlinks before calling this.
+func (db *DB) ResetLibraryItemState(ctx context.Context, libraryItemID int64) error {
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var (
+		queueItemID       int64
+		selectedReleaseID sql.NullInt64
+	)
+	if err = tx.QueryRowContext(ctx, `
+		SELECT id, selected_release_id
+		FROM queue_items
+		WHERE library_item_id = $1
+		ORDER BY id DESC
+		LIMIT 1`, libraryItemID,
+	).Scan(&queueItemID, &selectedReleaseID); err != nil {
+		return err
+	}
+
+	if selectedReleaseID.Valid {
+		if err = preDeleteVFRBySelectedRelease(ctx, tx, selectedReleaseID.Int64); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM selected_releases WHERE id = $1`, selectedReleaseID.Int64); err != nil {
+			return err
+		}
+	}
+
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE queue_items
+		SET state = $2, failure_reason = '', selected_release_id = NULL, updated_at = now()
+		WHERE id = $1`, queueItemID, QueueRequested,
+	); err != nil {
+		return err
+	}
+
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE library_items SET available = false WHERE id = $1`, libraryItemID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func nullTime(value time.Time) any {
 	if value.IsZero() {
 		return nil

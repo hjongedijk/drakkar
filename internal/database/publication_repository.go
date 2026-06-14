@@ -62,6 +62,29 @@ func (db *DB) ListVirtualFilesForRelease(ctx context.Context, selectedReleaseID 
 	return out, rows.Err()
 }
 
+// DeleteSymlinkPublicationsForLibraryItem removes all symlink_publications rows
+// for the given library item and returns their library_path values so the caller
+// can delete the corresponding filesystem symlinks.
+func (db *DB) DeleteSymlinkPublicationsForLibraryItem(ctx context.Context, libraryItemID int64) ([]string, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		DELETE FROM symlink_publications
+		WHERE library_item_id = $1
+		RETURNING library_path`, libraryItemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}
+
 func (db *DB) UpsertSymlinkPublication(ctx context.Context, libraryItemID, virtualFileID int64, libraryPath, targetPath string) error {
 	_, err := db.SQL.ExecContext(ctx, `
 		insert into symlink_publications (library_item_id, virtual_file_id, library_path, target_path)

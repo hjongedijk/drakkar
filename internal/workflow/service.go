@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -76,6 +77,8 @@ type Repository interface {
 	ListSabQueueItems(ctx context.Context, category string, start, limit int) ([]database.SabQueueItem, int, error)
 	ListSabHistoryItems(ctx context.Context, category string, start, limit int) ([]database.SabHistoryItem, int, error)
 	DismissSabItems(ctx context.Context, libraryItemIDs []int64) error
+	DeleteSymlinkPublicationsForLibraryItem(ctx context.Context, libraryItemID int64) ([]string, error)
+	ResetLibraryItemState(ctx context.Context, libraryItemID int64) error
 }
 
 type SeerrClient interface {
@@ -2373,4 +2376,20 @@ func (s *Service) ManualSearch(ctx context.Context, query string) ([]ManualSearc
 		})
 	}
 	return out, nil
+}
+
+// ResetLibraryItem removes the symlinks for a library item from the filesystem,
+// deletes the associated NZB data, and resets the queue entry to 'requested' so
+// the item re-enters the normal search cycle as if it were newly added.
+func (s *Service) ResetLibraryItem(ctx context.Context, libraryItemID int64) error {
+	paths, err := s.repo.DeleteSymlinkPublicationsForLibraryItem(ctx, libraryItemID)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if removeErr := os.Remove(p); removeErr != nil && !os.IsNotExist(removeErr) {
+			s.logger.Warn().Str("path", p).Err(removeErr).Msg("reset: could not remove symlink")
+		}
+	}
+	return s.repo.ResetLibraryItemState(ctx, libraryItemID)
 }

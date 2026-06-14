@@ -85,6 +85,8 @@ export const api = {
   searchPendingLibrary: () => request<BulkSearchResult>('/api/library/search-pending', { method: 'POST' }),
   searchLibrary: (libraryItemID: number) =>
     request<{ candidateCount: number; selectedReleaseId?: number }>(`/api/library/${libraryItemID}/search`, { method: 'POST' }),
+  resetLibraryItem: (libraryItemID: number) =>
+    request<{ libraryItemId: number }>(`/api/library/${libraryItemID}/reset`, { method: 'POST' }),
   republishLibrary: (libraryItemID: number) =>
     request<{ status: string; libraryItemId: number }>(`/api/library/${libraryItemID}/republish`, { method: 'POST' }),
   restoreRejectedLibrary: (libraryItemID: number) =>
