@@ -82,6 +82,7 @@ type Repository interface {
 	DismissSabItems(ctx context.Context, libraryItemIDs []int64) error
 	DeleteSymlinkPublicationsForLibraryItem(ctx context.Context, libraryItemID int64) ([]string, error)
 	ResetLibraryItemState(ctx context.Context, libraryItemID int64) error
+	ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error)
 }
 
 type SeerrClient interface {
@@ -2637,4 +2638,30 @@ func (s *Service) ResetLibraryItem(ctx context.Context, libraryItemID int64) err
 		}
 	}
 	return s.repo.ResetLibraryItemState(ctx, libraryItemID)
+}
+
+// ResetOrphanedAvailableItemsResult summarises a bulk orphan-reset pass.
+type ResetOrphanedAvailableItemsResult struct {
+	Found  int `json:"found"`
+	Reset  int `json:"reset"`
+	Failed int `json:"failed"`
+}
+
+// ResetOrphanedAvailableItems finds library items that are available=true but
+// have no symlink and no recoverable virtual-file path, then resets each one
+// back to 'requested' so it re-enters the normal search cycle.
+func (s *Service) ResetOrphanedAvailableItems(ctx context.Context) (ResetOrphanedAvailableItemsResult, error) {
+	ids, err := s.repo.ListUnrecoverableLibraryItems(ctx)
+	if err != nil {
+		return ResetOrphanedAvailableItemsResult{}, err
+	}
+	result := ResetOrphanedAvailableItemsResult{Found: len(ids)}
+	for _, id := range ids {
+		if err := s.ResetLibraryItem(ctx, id); err != nil {
+			result.Failed++
+			continue
+		}
+		result.Reset++
+	}
+	return result, nil
 }

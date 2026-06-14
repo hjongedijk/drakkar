@@ -59,6 +59,7 @@ const (
 	taskOrphanedCompleted      = "orphaned-completed-symlinks"
 	taskFillMissingEpisodes    = "fill_missing_episodes"
 	taskSearchUpgrades         = "search_upgrades"
+	taskResetOrphaned          = "reset_orphaned_available"
 )
 
 type runtimeStatus struct {
@@ -115,6 +116,7 @@ func (s *taskScheduleStatusService) ListTaskSchedules(ctx context.Context) ([]ap
 		{ID: maintenanceRecentMovieTask, Label: "Recent Movie Feed", Group: "Indexing", Interval: fmt.Sprintf("%dm", s.movieRssSyncIntervalMinutes), Automated: true, LastRunState: "idle"},
 		{ID: taskRetryFailedQueue, Label: "Retry Failed Queue", Group: "Indexing", Interval: "15m", Automated: true, LastRunState: "idle"},
 		{ID: taskRepublishPending, Label: "Republish Pending", Group: "Publishing", Interval: "30m", Automated: true, LastRunState: "idle"},
+		{ID: taskResetOrphaned, Label: "Reset Orphaned Available Items", Group: "Publishing", Interval: "Manual", Automated: false, LastRunState: "idle"},
 		{ID: taskHealthCheck, Label: "Run Health Check", Group: "Maintenance", Interval: "60m", Automated: true, LastRunState: "idle"},
 		{ID: taskNZBHealthCheck, Label: "Deep NZB Article Check", Group: "Maintenance", Interval: "168h", Automated: false, LastRunState: "idle"},
 		{ID: taskCachePrune, Label: "Prune Block Cache", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
@@ -557,6 +559,17 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 		logger.Info().Int("republished", result.Republished).Msg("monitoring: republish pending complete")
 	}
+
+	runResetOrphanedPass := func() {
+		result, err := workflowSvc.ResetOrphanedAvailableItems(ctx)
+		if err != nil {
+			logger.Error().Err(err).Msg("monitoring: reset orphaned available items error")
+			return
+		}
+		_ = db.TouchMaintenanceCursor(ctx, taskResetOrphaned, time.Now().UTC().Format(time.RFC3339))
+		logger.Info().Int("found", result.Found).Int("reset", result.Reset).Msg("monitoring: reset orphaned available items complete")
+	}
+	_ = runResetOrphanedPass // exposed via HTTP only; not scheduled automatically
 
 	runHealthCheck := func() {
 		entries, err := db.ListHealthEntries(ctx)

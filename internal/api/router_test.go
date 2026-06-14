@@ -183,6 +183,9 @@ func (w workflowStub) ManualSearch(_ context.Context, _ string) ([]workflow.Manu
 	return nil, nil
 }
 func (w workflowStub) ResetLibraryItem(_ context.Context, _ int64) error { return nil }
+func (w workflowStub) ResetOrphanedAvailableItems(_ context.Context) (workflow.ResetOrphanedAvailableItemsResult, error) {
+	return workflow.ResetOrphanedAvailableItemsResult{}, nil
+}
 
 func (w workflowStub) ImportNZBFromPush(_ context.Context, content []byte, filename, mediaType string) (string, error) {
 	if w.importCall != nil {

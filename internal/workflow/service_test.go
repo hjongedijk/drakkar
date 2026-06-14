@@ -332,6 +332,9 @@ func (r *repoStub) DeleteSymlinkPublicationsForLibraryItem(_ context.Context, _ 
 	return nil, nil
 }
 func (r *repoStub) ResetLibraryItemState(_ context.Context, _ int64) error { return nil }
+func (r *repoStub) ListUnrecoverableLibraryItems(_ context.Context) ([]int64, error) {
+	return nil, nil
+}
 func (r *repoStub) ListReleaseBlockRules(_ context.Context) ([]database.ReleaseBlockRule, error) {
 	return nil, nil
 }

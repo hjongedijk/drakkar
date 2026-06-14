@@ -139,6 +139,7 @@ export const api = {
   restoreRejectedLibrary: (libraryItemID: number) =>
     request<{ libraryItemId: number; restored: number }>(`/api/library/${libraryItemID}/restore-rejected`, { method: 'POST' }),
   republishPendingLibrary: () => request<BulkRepublishResult>('/api/library/republish-pending', { method: 'POST' }),
+  resetOrphanedAvailableItems: () => request<{ found: number; reset: number; failed: number }>('/api/library/reset-orphaned-available', { method: 'POST' }),
   selectRelease: (releaseCandidateID: number) =>
     request<{ releaseCandidateId: number; action: string; selectedReleaseId?: number }>(`/api/releases/${releaseCandidateID}/select`, { method: 'POST' }),
   rejectRelease: (releaseCandidateID: number, reason = 'manual_reject') =>

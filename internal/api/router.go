@@ -139,6 +139,7 @@ type WorkflowService interface {
 	ManualSearch(ctx context.Context, query string) ([]workflow.ManualSearchItem, error)
 	ImportNZBFromPush(ctx context.Context, content []byte, filename, mediaType string) (string, error)
 	ResetLibraryItem(ctx context.Context, libraryItemID int64) error
+	ResetOrphanedAvailableItems(ctx context.Context) (workflow.ResetOrphanedAvailableItemsResult, error)
 }
 
 type PublicationService interface {
@@ -1261,6 +1262,19 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			return
 		}
 		publishMutation("library.republish_pending", map[string]any{"processed": result.Processed, "republished": result.Republished, "failed": result.Failed})
+		respondJSON(w, http.StatusAccepted, result)
+	})
+	r.Post("/api/library/reset-orphaned-available", func(w http.ResponseWriter, r *http.Request) {
+		if workflowSvc == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
+			return
+		}
+		result, err := workflowSvc.ResetOrphanedAvailableItems(r.Context())
+		if err != nil {
+			respondError(w, http.StatusBadGateway, err)
+			return
+		}
+		publishMutation("library.reset_orphaned", map[string]any{"found": result.Found, "reset": result.Reset, "failed": result.Failed})
 		respondJSON(w, http.StatusAccepted, result)
 	})
 	r.Post("/api/library/backfill-metadata", func(w http.ResponseWriter, r *http.Request) {

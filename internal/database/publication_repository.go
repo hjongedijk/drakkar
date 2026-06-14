@@ -236,6 +236,48 @@ func (db *DB) ListSelectedReleasesByLibraryItem(ctx context.Context, libraryItem
 	return out, rows.Err()
 }
 
+// ListUnrecoverableLibraryItems returns library items that are available=true
+// with no symlink_publications and no recoverable virtual-file path — neither
+// via their own selected_release nor via a shared release_candidate (season pack).
+// These items must be reset so they re-enter the normal search cycle.
+func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		select li.id
+		from library_items li
+		where li.available = true
+		  and not exists (
+		      select 1 from symlink_publications sp
+		      where sp.library_item_id = li.id
+		  )
+		  and not exists (
+		      select 1 from selected_releases sr
+		      join virtual_files vf on vf.selected_release_id = sr.id
+		      where sr.library_item_id = li.id
+		  )
+		  and not exists (
+		      select 1 from selected_releases ep_sr
+		      join selected_releases pack_sr
+		        on pack_sr.release_candidate_id = ep_sr.release_candidate_id
+		       and pack_sr.library_item_id != li.id
+		      join virtual_files vf on vf.selected_release_id = pack_sr.id
+		      where ep_sr.library_item_id = li.id
+		  )
+		order by li.id asc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // FindSourceSelectedReleaseForItem returns the selected_release ID of the season
 // pack that owns the virtual files for a given library item. Used when an episode
 // item has a selected_release but no virtual files of its own — the files live
