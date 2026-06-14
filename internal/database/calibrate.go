@@ -11,6 +11,45 @@ type SegmentSizer interface {
 	DecodedSize(ctx context.Context, messageID string) (int64, error)
 }
 
+// PreflightCheckFirstSegments verifies that the first segment of every NZB file
+// in the given document is reachable on NNTP. Unlike CalibrateNZBOffsets (which
+// silently skips missing segments), this returns an error immediately so the
+// workqueue can reject the release and fall back to the next candidate.
+func (db *DB) PreflightCheckFirstSegments(ctx context.Context, nzbDocumentID int64) error {
+	sizer, ok := db.SegmentFetcher.(SegmentSizer)
+	if !ok || sizer == nil {
+		return nil // NNTP fetcher not available; skip preflight
+	}
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT DISTINCT ON (nf.id)
+		    ns.message_id
+		FROM nzb_files nf
+		JOIN nzb_segments ns ON ns.nzb_file_id = nf.id
+		WHERE nf.nzb_document_id = $1
+		ORDER BY nf.id, ns.segment_number ASC`, nzbDocumentID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var msgIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		msgIDs = append(msgIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, msgID := range msgIDs {
+		if _, err := sizer.DecodedSize(ctx, msgID); err != nil {
+			return fmt.Errorf("preflight: first segment %s unavailable: %w", msgID, err)
+		}
+	}
+	return nil
+}
+
 // CalibrateAllNZBOffsets runs CalibrateNZBOffsets for every NZB document in the
 // database that has uncalibrated files. Called once at startup to fix any NZBs
 // imported with the old estimated offset factor.

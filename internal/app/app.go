@@ -263,6 +263,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		hydraClient.SetSearchDelay(time.Duration(cfg.Indexer.SearchDelayMs) * time.Millisecond)
 	}
 	workflowSvc := workflow.NewService(db, seerrClient, hydraClient)
+	workflowSvc.SetPreflightChecker(func(ctx context.Context, item database.QueueSnapshot) error {
+		if item.NZBDocumentID == nil {
+			return nil
+		}
+		return db.PreflightCheckFirstSegments(ctx, *item.NZBDocumentID)
+	})
 	wq, err := workflow.NewWorkQueue(3, valkey, wqWorkerClient)
 	if err != nil {
 		return fmt.Errorf("workqueue init: %w", err)
@@ -672,6 +678,9 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			logger.Error().Err(err).Msg("calibrate nzb offsets failed")
 		}
 	}()
+	go func() {
+		runNZBHealthCheck(ctx, db, workflowSvc, logger)
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -738,6 +747,90 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// runNZBHealthCheck scans all available library items on startup and resets any
+// whose first NNTP segment is no longer retrievable. This mirrors nzbdav's
+// HealthCheckService and fixes items that were published before the preflight
+// check was wired up (e.g. Superman, Batman v Superman with expired articles).
+func runNZBHealthCheck(ctx context.Context, db *database.DB, workflowSvc *workflow.Service, logger zerolog.Logger) {
+	sizer, ok := db.SegmentFetcher.(database.SegmentSizer)
+	if !ok || sizer == nil {
+		return
+	}
+
+	type candidate struct {
+		libraryItemID int64
+		title         string
+		firstMsgID    string
+	}
+
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT DISTINCT ON (qi.library_item_id)
+		    qi.library_item_id,
+		    li.title,
+		    (SELECT ns.message_id
+		     FROM nzb_files nf
+		     JOIN nzb_segments ns ON ns.nzb_file_id = nf.id
+		     WHERE nf.nzb_document_id = nd.id
+		     ORDER BY nf.id ASC, ns.segment_number ASC
+		     LIMIT 1)
+		FROM queue_items qi
+		JOIN library_items li ON li.id = qi.library_item_id
+		JOIN selected_releases sr ON sr.id = qi.selected_release_id
+		JOIN nzb_documents nd ON nd.selected_release_id = sr.id
+		WHERE qi.state = 'available' AND li.available = true
+		ORDER BY qi.library_item_id ASC, qi.id DESC`)
+	if err != nil {
+		logger.Error().Err(err).Msg("health check: query failed")
+		return
+	}
+	defer rows.Close()
+
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.libraryItemID, &c.title, &c.firstMsgID); err != nil {
+			continue
+		}
+		if c.firstMsgID != "" {
+			candidates = append(candidates, c)
+		}
+	}
+	_ = rows.Err()
+
+	logger.Info().Int("count", len(candidates)).Msg("health check: scanning available library items")
+	reset := 0
+	for _, c := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		_, err := sizer.DecodedSize(checkCtx, c.firstMsgID)
+		cancel()
+		if err == nil {
+			continue
+		}
+		msg := err.Error()
+		// Only reset on definite "article missing" errors, not transient failures.
+		if !strings.Contains(msg, "not found") && !strings.Contains(msg, "430") {
+			continue
+		}
+		logger.Warn().
+			Int64("libraryItemId", c.libraryItemID).
+			Str("title", c.title).
+			Str("msgID", c.firstMsgID).
+			Err(err).
+			Msg("health check: first segment missing — resetting item for re-queue")
+		if resetErr := workflowSvc.ResetLibraryItem(ctx, c.libraryItemID); resetErr != nil {
+			logger.Error().Err(resetErr).Int64("libraryItemId", c.libraryItemID).Msg("health check: reset failed")
+		} else {
+			reset++
+		}
+	}
+	if reset > 0 {
+		logger.Info().Int("reset", reset).Msg("health check: reset broken items for re-queue")
+	}
 }
 
 type liveMetricsCollector struct {
