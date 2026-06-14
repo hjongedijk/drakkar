@@ -356,12 +356,14 @@ export const api = {
   setupStatus: () => request<{ required: boolean }>('/api/setup/status'),
 };
 
-export function subscribeEvents(onMessage: () => void): () => void {
+export function subscribeEvents(onMessage: (event?: Record<string, unknown>) => void): () => void {
   if (!browser) {
     return () => {};
   }
   const source = new EventSource(eventsURL());
-  source.addEventListener('message', () => onMessage());
+  source.addEventListener('message', (e) => {
+    try { onMessage(JSON.parse(e.data as string)); } catch { onMessage(); }
+  });
   source.onerror = () => {};
   return () => source.close();
 }

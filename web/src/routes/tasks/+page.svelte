@@ -10,7 +10,7 @@
   import Button from '$lib/components/Button.svelte';
   import StatusPill from '$lib/components/StatusPill.svelte';
   import { toastError, toastSuccess } from '$lib/toast';
-  import { api } from '$lib/api';
+  import { api, subscribeEvents } from '$lib/api';
   import type { TaskSchedule } from '$lib/types';
 
   type TaskResult = { ok: boolean; detail: string; ranAt: string };
@@ -87,10 +87,24 @@
   $: runningCount = Object.values(running).filter(Boolean).length;
   $: lastRunCount = Object.keys(results).length;
 
+  // Map SSE event kinds to human-readable task completion messages.
+  const backgroundKinds: Record<string, (e: Record<string, unknown>) => string> = {
+    'library.republish_pending': (e) => `Republish Pending complete: processed ${e.processed}, republished ${e.republished}, failed ${e.failed}`,
+    'library.reset_orphaned': (e) => `Reset Orphaned complete: found ${e.found}, reset ${e.reset}, failed ${e.failed}`,
+  };
+
   onMount(() => {
     void loadSchedules();
     const t = window.setInterval(() => void loadSchedules(), 30000);
-    return () => window.clearInterval(t);
+    const unsub = subscribeEvents((event) => {
+      if (!event) return;
+      const fmt = backgroundKinds[event.kind as string];
+      if (fmt) {
+        toastSuccess(fmt(event));
+        void loadSchedules();
+      }
+    });
+    return () => { window.clearInterval(t); unsub(); };
   });
 </script>
 
