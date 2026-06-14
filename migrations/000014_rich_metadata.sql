@@ -78,6 +78,3 @@ CREATE INDEX IF NOT EXISTS movies_release_date_idx   ON movies (release_date);
 CREATE INDEX IF NOT EXISTS movies_status_idx         ON movies (status);
 CREATE INDEX IF NOT EXISTS tv_shows_first_air_date_idx ON tv_shows (first_air_date);
 CREATE INDEX IF NOT EXISTS tv_shows_status_idx       ON tv_shows (status);
-
--- Record migration
-INSERT INTO schema_migrations (version) VALUES ('000014_rich_metadata.sql') ON CONFLICT DO NOTHING;
