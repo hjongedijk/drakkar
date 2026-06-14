@@ -880,7 +880,12 @@ func (db *DB) ReplaceSearchCandidates(ctx context.Context, libraryItemID int64, 
 			nullTime(candidate.PostedAt),
 			candidate.Resolution,
 			candidate.Explanations,
-			candidate.CompatibilityWarnings,
+			func() []string {
+				if candidate.CompatibilityWarnings == nil {
+					return []string{}
+				}
+				return candidate.CompatibilityWarnings
+			}(),
 		).Scan(&releaseCandidateID); err != nil {
 			return nil, err
 		}
