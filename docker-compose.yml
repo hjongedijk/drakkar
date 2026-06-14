@@ -52,7 +52,7 @@ services:
     # at the mountpoint and rclone fails with "Socket not connected" on restart.
     entrypoint: ["sh", "-c"]
     command:
-      - "fusermount3 -uz /mnt/drakkar/vfs 2>/dev/null; umount -l /mnt/drakkar/vfs 2>/dev/null; exec rclone mount drakkar: /mnt/drakkar/vfs --uid=0 --gid=0 --allow-other --allow-non-empty --links --use-cookies --vfs-cache-mode=off --buffer-size=0M --dir-cache-time=20s"
+      - "fusermount3 -uz /mnt/drakkar/vfs 2>/dev/null; umount -l /mnt/drakkar/vfs 2>/dev/null; exec rclone mount drakkar: /mnt/drakkar/vfs --uid=0 --gid=0 --allow-other --allow-non-empty --links --use-cookies --vfs-cache-mode=off --buffer-size=256M --dir-cache-time=20s"
 
   postgres:
     image: postgres:16-alpine

@@ -68,6 +68,20 @@ func (p *Publisher) publishSelectedRelease(ctx context.Context, selectedReleaseI
 	}
 	libraryItemIDs := make(map[int64]struct{})
 	for _, file := range files {
+		// Season-pack guard: when a specific episode is expected (season > 0,
+		// episode > 0) and the pack contains multiple files, only publish the file
+		// whose filename parses to the expected episode. The other files are handled
+		// by fulfillSeasonPackEpisodes. Without this guard every file in the pack
+		// overwrites the same library path (e.g. S01E01.mkv) and the last file
+		// alphabetically wins — typically the season finale.
+		if strings.EqualFold(file.MediaType, "episode") &&
+			file.SeasonNumber > 0 && file.EpisodeNumber > 0 && len(files) > 1 {
+			fs, fe := database.ParseEpisodeFromFilename(file.FileName)
+			if fs > 0 && fe > 0 && (fs != file.SeasonNumber || fe != file.EpisodeNumber) {
+				libraryItemIDs[file.LibraryItemID] = struct{}{}
+				continue
+			}
+		}
 		target := filepath.Join(p.runtime.FuseMountPath, "content", file.Path)
 		libraryPath := p.libraryPathFor(file)
 		if libraryPath == "" {
@@ -184,6 +198,16 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 		if !ok {
 			vf.VirtualFileID = m.VirtualFileID
 		}
+		// Prefer the file path from fileByEpisode (ordered by vf.path, so deterministic
+		// and alphabetically last — proper "ShowName.SxxExx.Title.mkv" files sort after
+		// bonus content like "Behind The Story - SxxExx.mkv"). Fall back to m.VirtualFilePath
+		// only when fileByEpisode had no entry for this episode.
+		enrichedPath := m.VirtualFilePath
+		enrichedFileName := m.FileName
+		if ok && vf.Path != "" {
+			enrichedPath = vf.Path
+			enrichedFileName = vf.FileName
+		}
 		// Publish the host symlink for this episode using its proper library item metadata.
 		// We reuse the existing virtual file — no new NNTP fetching needed.
 		enriched := database.ReleaseVirtualFile{
@@ -191,8 +215,8 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 			SelectedReleaseID: selectedReleaseID,
 			LibraryItemID:     m.LibraryItemID,
 			MediaType:         "episode",
-			Path:              m.VirtualFilePath,
-			FileName:          m.FileName,
+			Path:              enrichedPath,
+			FileName:          enrichedFileName,
 		}
 		// Attempt to get episode-specific metadata via DB (show title, tvdb, season, episode).
 		if meta, metaErr := p.repo.ListVirtualFilesForRelease(ctx, selectedReleaseID); metaErr == nil {
