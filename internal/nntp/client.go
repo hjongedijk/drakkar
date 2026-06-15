@@ -113,6 +113,11 @@ func (s *clientSession) Body(ctx context.Context, messageID string) ([]byte, err
 	if err := s.conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
+	// Expire the connection immediately when ctx is canceled so the pool slot
+	// is freed before the 30s deadline — critical for responsive seek on movies
+	// where a seek cancels up to 40 in-flight read-ahead connections.
+	stop := context.AfterFunc(ctx, func() { _ = s.conn.SetDeadline(time.Now()) })
+	defer stop()
 	if err := writeCommand(s.writer, "BODY "+normalizeMessageID(messageID)); err != nil {
 		return nil, err
 	}
@@ -134,6 +139,8 @@ func (s *clientSession) Stat(ctx context.Context, messageID string) error {
 	if err := s.conn.SetDeadline(deadline); err != nil {
 		return err
 	}
+	stop := context.AfterFunc(ctx, func() { _ = s.conn.SetDeadline(time.Now()) })
+	defer stop()
 	if err := writeCommand(s.writer, "STAT "+normalizeMessageID(messageID)); err != nil {
 		return err
 	}
