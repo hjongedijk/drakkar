@@ -239,21 +239,27 @@ func (db *DB) ListSelectedReleasesByLibraryItem(ctx context.Context, libraryItem
 // ListUnrecoverableLibraryItems returns library items that are available=true
 // with no symlink_publications and no recoverable virtual-file path — neither
 // via their own selected_release nor via a shared release_candidate (season pack).
+// Also catches items whose VF filenames are all obfuscated (no SxxExx pattern).
+// manual_nzb imports are excluded — they intentionally have no library path.
 // These items must be reset so they re-enter the normal search cycle.
 func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
 		select li.id
 		from library_items li
 		where li.available = true
+		  and li.media_type != 'manual_nzb'
 		  and not exists (
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
 		  )
+		  -- No parseable VF via own selected_release (SxxExx pattern required).
 		  and not exists (
 		      select 1 from selected_releases sr
 		      join virtual_files vf on vf.selected_release_id = sr.id
 		      where sr.library_item_id = li.id
+		      and (' ' || vf.filename || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
 		  )
+		  -- No parseable VF via season-pack selected_release.
 		  and not exists (
 		      select 1 from selected_releases ep_sr
 		      join selected_releases pack_sr
@@ -261,6 +267,7 @@ func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error
 		       and pack_sr.library_item_id != li.id
 		      join virtual_files vf on vf.selected_release_id = pack_sr.id
 		      where ep_sr.library_item_id = li.id
+		      and (' ' || vf.filename || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
 		  )
 		order by li.id asc`)
 	if err != nil {

@@ -71,10 +71,12 @@ func (db *DB) HealthSummary(ctx context.Context) (HealthSummary, error) {
 		return s, err
 	}
 	// Count library items marked available but with no published symlink.
+	// Exclude manual_nzb imports — they have no episode metadata and can never produce a library path.
 	_ = db.SQL.QueryRowContext(ctx, `
 		select count(*)
 		from library_items li
 		where li.available = true
+		  and li.media_type != 'manual_nzb'
 		  and not exists (
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
@@ -90,6 +92,7 @@ func (db *DB) ListConsistencyIssues(ctx context.Context) ([]ConsistencyIssue, er
 		                 order by qi.id desc limit 1), '') as queue_state
 		from library_items li
 		where li.available = true
+		  and li.media_type != 'manual_nzb'
 		  and not exists (
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
