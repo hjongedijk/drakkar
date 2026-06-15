@@ -16,10 +16,10 @@ import (
 	"github.com/hjongedijk/drakkar/internal/config"
 )
 
-// defaultSearchInterval is the built-in floor between consecutive Hydra calls.
-// Sonarr/Radarr apply no self-imposed delay (they rely on NZBHydra2's own
-// per-indexer rate limiting). Set to 0 to match that behaviour.
-const defaultSearchInterval = 0
+// defaultSearchInterval is the minimum gap between consecutive Hydra API calls.
+// This serialises concurrent BullMQ worker goroutines through a single queue,
+// preventing simultaneous episode searches from flooding indexers.
+var defaultSearchInterval = 2 * time.Second
 
 var ErrRateLimited = errors.New("nzbhydra2 rate limited")
 
@@ -102,7 +102,7 @@ func NewClient(cfg config.ServiceConfig) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		searchInterval: time.Duration(defaultSearchInterval),
+		searchInterval: defaultSearchInterval,
 		searchCacheTTL: searchCacheTTL,
 		feedCacheTTL:   feedCacheTTL,
 		feedMaxResults: feedMaxResults,

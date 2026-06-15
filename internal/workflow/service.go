@@ -1741,24 +1741,15 @@ func buildSearchRequests(input database.LibrarySearchInput) SearchRequestPlan {
 			dedup(&tier2, baseTV(show, 0, "", 0))
 			break
 		}
-		// Tier 2: title-based episode variants
+		// Tier 2: one canonical title query — NZBHydra2 handles per-indexer
+		// format variants internally, so a single SxxExx query is sufficient.
 		if input.SeasonNumber > 0 && input.EpisodeNumber > 0 {
 			dedup(&tier2, baseTV(fmt.Sprintf("%s S%02dE%02d", show, input.SeasonNumber, input.EpisodeNumber), 0, "", 0))
-			dedup(&tier2, baseTV(fmt.Sprintf("%s %dx%02d", show, input.SeasonNumber, input.EpisodeNumber), 0, "", 0))
-			if input.ShowYear > 0 {
-				dedup(&tier2, baseTV(fmt.Sprintf("%s %d S%02dE%02d", show, input.ShowYear, input.SeasonNumber, input.EpisodeNumber), 0, "", 0))
-			}
-			if strings.TrimSpace(input.EpisodeTitle) != "" {
-				dedup(&tier2, baseTV(fmt.Sprintf("%s %s", show, input.EpisodeTitle), 0, "", 0))
-			}
-		}
-		if input.SeasonNumber > 0 {
+		} else if input.SeasonNumber > 0 {
 			dedup(&tier2, baseTV(fmt.Sprintf("%s S%02d", show, input.SeasonNumber), 0, "", 0))
-			if input.ShowYear > 0 {
-				dedup(&tier2, baseTV(fmt.Sprintf("%s %d S%02d", show, input.ShowYear, input.SeasonNumber), 0, "", 0))
-			}
+		} else {
+			dedup(&tier2, baseTV(show, 0, "", 0))
 		}
-		dedup(&tier2, baseTV(show, 0, "", 0))
 
 	default:
 		return SearchRequestPlan{Tier2: []hydra.SearchRequest{{

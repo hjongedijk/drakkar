@@ -833,7 +833,7 @@ func TestSearchLibraryContinuesPastSelectedCandidateWithFailureHistory(t *testin
 	}
 }
 
-func TestSearchLibraryContinuesPastSeasonPackToLaterExactEpisodeQuery(t *testing.T) {
+func TestSearchLibraryUsesOnlyOneEpisodeTitleQuery(t *testing.T) {
 	repo := &repoStub{
 		searchInput: database.LibrarySearchInput{
 			LibraryItemID: 42,
@@ -848,10 +848,7 @@ func TestSearchLibraryContinuesPastSeasonPackToLaterExactEpisodeQuery(t *testing
 	var queries []string
 	service := NewService(repo, seerrStub{}, hydraStub{byQuery: map[string][]hydra.SearchResult{
 		"Loki S01E02": {
-			{Title: "Loki.Season.1.Complete.1080p.WEB-DL", Link: "http://example/pack", Indexer: "hydra", SizeBytes: 5000, PublishedAt: time.Now()},
-		},
-		"Loki 1x02": {
-			{Title: "Loki.S01E02.1080p.WEB-DL", Link: "http://example/exact", Indexer: "hydra", SizeBytes: 1200, PublishedAt: time.Now()},
+			{Title: "Loki.S01E02.1080p.WEB-DL", Link: "http://example/episode", Indexer: "hydra", SizeBytes: 1200, PublishedAt: time.Now()},
 		},
 	}, queries: &queries})
 	service.fetcher = fetcherStub{
@@ -866,15 +863,15 @@ func TestSearchLibraryContinuesPastSeasonPackToLaterExactEpisodeQuery(t *testing
 	if result.SelectedReleaseID == nil {
 		t.Fatalf("expected selected release, got %+v", result)
 	}
-	if len(queries) < 2 || queries[0] != "Loki S01E02" || queries[1] != "Loki 1x02" {
-		t.Fatalf("expected search to continue to later exact-episode query, got %+v", queries)
-	}
-	if repo.searchApplied[0].ExternalURL != "http://example/exact" {
-		t.Fatalf("expected exact episode candidate ranked first, got %+v", repo.searchApplied)
+	// Only the canonical SxxExx query should be sent — no year variants, 3x02, episode title, etc.
+	if len(queries) != 1 || queries[0] != "Loki S01E02" {
+		t.Fatalf("expected exactly 1 episode query 'Loki S01E02', got %+v", queries)
 	}
 }
 
-func TestSearchLibraryUsesEpisodeTitleFallbackQuery(t *testing.T) {
+func TestSearchLibraryEpisodeNoExtraTitleVariants(t *testing.T) {
+	// Episode title, year, and 3x02 variants are NOT sent as separate queries.
+	// NZBHydra2 handles per-indexer format adaptation internally.
 	repo := &repoStub{
 		searchInput: database.LibrarySearchInput{
 			LibraryItemID: 42,
@@ -889,12 +886,8 @@ func TestSearchLibraryUsesEpisodeTitleFallbackQuery(t *testing.T) {
 	}
 	var queries []string
 	service := NewService(repo, seerrStub{}, hydraStub{byQuery: map[string][]hydra.SearchResult{
-		"Loki S01E02":      {},
-		"Loki 1x02":        {},
-		"Loki 2021 S01E02": {},
-		"Loki 2021 1x02":   {},
-		"Loki The Variant": {
-			{Title: "Loki.The.Variant.1080p.WEB-DL", Link: "http://example/title", Indexer: "hydra", SizeBytes: 1200, PublishedAt: time.Now()},
+		"Loki S01E02": {
+			{Title: "Loki.S01E02.1080p.WEB-DL", Link: "http://example/episode", Indexer: "hydra", SizeBytes: 1200, PublishedAt: time.Now()},
 		},
 	}, queries: &queries})
 	service.fetcher = fetcherStub{
@@ -909,18 +902,10 @@ func TestSearchLibraryUsesEpisodeTitleFallbackQuery(t *testing.T) {
 	if result.SelectedReleaseID == nil {
 		t.Fatalf("expected selected release, got %+v", result)
 	}
-	found := false
-	for _, query := range queries {
-		if query == "Loki The Variant" {
-			found = true
-			break
+	for _, q := range queries {
+		if q == "Loki The Variant" || q == "Loki 1x02" || q == "Loki 2021 S01E02" {
+			t.Fatalf("unexpected extra query variant sent: %q (all queries: %v)", q, queries)
 		}
-	}
-	if !found {
-		t.Fatalf("expected episode-title fallback query, got %+v", queries)
-	}
-	if repo.searchApplied[0].ExternalURL != "http://example/title" {
-		t.Fatalf("expected title-based candidate ranked first, got %+v", repo.searchApplied)
 	}
 }
 
