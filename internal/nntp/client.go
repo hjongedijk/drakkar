@@ -158,10 +158,19 @@ func (c *ArticleClient) dial(ctx context.Context) (net.Conn, error) {
 	address := net.JoinHostPort(c.provider.Host, strconv.Itoa(c.provider.Port))
 	dialer := &net.Dialer{Timeout: c.timeout}
 	if c.provider.TLS {
-		return tls.DialWithDialer(dialer, "tcp", address, &tls.Config{
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		if err != nil {
+			return nil, err
+		}
+		tlsConn := tls.Client(conn, &tls.Config{
 			ServerName: c.provider.Host,
 			MinVersion: tls.VersionTLS12,
 		})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
 	}
 	return dialer.DialContext(ctx, "tcp", address)
 }

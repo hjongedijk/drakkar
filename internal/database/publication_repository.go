@@ -214,7 +214,7 @@ func (db *DB) ListSelectedReleasesForPublication(ctx context.Context) ([]int64, 
 
 func (db *DB) ListSelectedReleasesByLibraryItem(ctx context.Context, libraryItemID int64) ([]int64, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
-		select sr.id
+		select distinct sr.id
 		from selected_releases sr
 		join virtual_files vf on vf.selected_release_id = sr.id
 		where sr.library_item_id = $1
@@ -257,7 +257,7 @@ func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error
 		      select 1 from selected_releases sr
 		      join virtual_files vf on vf.selected_release_id = sr.id
 		      where sr.library_item_id = li.id
-		      and (' ' || vf.filename || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
+		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
 		  )
 		  -- No parseable VF via season-pack selected_release.
 		  and not exists (
@@ -267,7 +267,7 @@ func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error
 		       and pack_sr.library_item_id != li.id
 		      join virtual_files vf on vf.selected_release_id = pack_sr.id
 		      where ep_sr.library_item_id = li.id
-		      and (' ' || vf.filename || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
+		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
 		  )
 		order by li.id asc`)
 	if err != nil {

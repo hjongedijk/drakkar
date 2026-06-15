@@ -609,14 +609,15 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			if runOnStartup {
 				fn()
 			}
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
+			timer := time.NewTimer(interval)
+			defer timer.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-ticker.C:
+				case <-timer.C:
 					fn()
+					timer.Reset(interval)
 				}
 			}
 		}()

@@ -427,6 +427,7 @@ func (s *Service) PushPendingToQueue(priority int) {
 	ctx := context.Background()
 	targets, err := s.repo.ListPendingLibrarySearchTargets(ctx)
 	if err != nil {
+		s.logger.Error().Err(err).Msg("PushPendingToQueue: ListPendingLibrarySearchTargets failed")
 		return
 	}
 	for _, target := range targets {
@@ -628,7 +629,7 @@ func (s *Service) RetryFailedQueue(ctx context.Context) (BulkQueueRetryResult, e
 		// discarding the release and doing a fresh NZBHydra2 search.
 		userAction := policy.ActionForReason(settings, target.FailureReason)
 		if userAction != policy.QueueActionDoNothing &&
-			!(userAction == policy.QueueActionSearchAgain && target.HasSelectedRelease && target.CandidateFailureCount == 0) {
+			!(target.HasSelectedRelease && target.CandidateFailureCount == 0) {
 			switch userAction {
 			case policy.QueueActionRemoveBlocklistAndSearch, policy.QueueActionRemoveAndBlocklist:
 				if err := s.repo.BlocklistQueueSelectedRelease(ctx, target.QueueItemID, target.FailureReason, ttl); err != nil {
@@ -676,8 +677,6 @@ func (s *Service) RetryFailedQueue(ctx context.Context) (BulkQueueRetryResult, e
 			}
 			continue
 		case policy.ActionDoNothing:
-			result.Failed++
-			result.FailedQueues = append(result.FailedQueues, target.QueueItemID)
 			continue
 		default:
 			// ActionSearchAgain, ActionRetryLater → standard retry flow.
@@ -1017,7 +1016,7 @@ func classifySearchFailureReason(err error) string {
 
 func isRetryableSearchFailure(err error) bool {
 	switch classifySearchFailureReason(err) {
-	case "search_timeout", "search_rate_limited", "search_unavailable":
+	case "search_timeout", "search_unavailable":
 		return true
 	default:
 		return false
@@ -1032,8 +1031,15 @@ func (s *Service) fetchAndImportSelectedRelease(ctx context.Context, selectedRel
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	semReleased := false
+	defer func() {
+		if !semReleased {
+			<-s.importSem
+		}
+	}()
 	result, importedRelease, err := s.fetchIndexAndRelease(ctx, selectedReleaseID)
 	<-s.importSem // release before publish — next NZB can be fetched while this one publishes
+	semReleased = true
 	if err != nil || importedRelease == nil {
 		return result, err
 	}
@@ -1138,20 +1144,18 @@ func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, select
 	if current.NZBDocumentID != nil {
 		return s.retrySelectedReleaseFromStoredNZB(ctx, current, depth)
 	}
-	for {
-		if err := s.repo.MarkSelectedReleaseFetching(ctx, current.SelectedReleaseID); err != nil {
-			return nil, err
-		}
-		fileName, raw, err := s.fetcher.Fetch(ctx, current.ExternalURL)
-		if err != nil {
-			return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
-		}
-		imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
-		if err != nil {
-			return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
-		}
-		return s.importSelectedRelease(ctx, current, imported, depth)
+	if err := s.repo.MarkSelectedReleaseFetching(ctx, current.SelectedReleaseID); err != nil {
+		return nil, err
 	}
+	fileName, raw, err := s.fetcher.Fetch(ctx, current.ExternalURL)
+	if err != nil {
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
+	}
+	imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
+	if err != nil {
+		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
+	}
+	return s.importSelectedRelease(ctx, current, imported, depth)
 }
 
 // dedupeSearchResults collapses results that are the same release posted to
@@ -1533,7 +1537,9 @@ func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current data
 	if depth >= 2 {
 		// Depth limit: fail the current item so it doesn't stay stuck in preflight.
 		// The next scheduler cycle will pick it up with a fresh search.
-		_, _ = s.repo.FailSelectedReleaseAndPromoteNext(dbCtx, current.SelectedReleaseID, reason)
+		if _, depthErr := s.repo.FailSelectedReleaseAndPromoteNext(dbCtx, current.SelectedReleaseID, reason); depthErr != nil {
+			s.logger.Error().Err(depthErr).Int64("selectedReleaseId", current.SelectedReleaseID).Msg("workqueue: depth-limit fail failed")
+		}
 		return nil, nil
 	}
 	metrics.M.FallbackReleaseAttempts.Add(1)
@@ -1970,7 +1976,7 @@ func (s *Service) ManageQueueItems(ctx context.Context, queueItemIDs []int64, ac
 }
 
 func (s *Service) AutoManageFailedQueue(ctx context.Context) (BulkQueueRetryResult, error) {
-	targets, err := s.repo.ListFailedQueueRetryTargets(ctx, 0)
+	targets, err := s.repo.ListFailedQueueRetryTargets(ctx, 100)
 	if err != nil {
 		return BulkQueueRetryResult{}, err
 	}
@@ -2317,8 +2323,15 @@ func (s *Service) ImportNZBFromPush(ctx context.Context, content []byte, filenam
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
+	semReleased := false
+	defer func() {
+		if !semReleased {
+			<-s.importSem
+		}
+	}()
 	item, err := s.repo.CreateImportedNZB(ctx, imported)
 	<-s.importSem
+	semReleased = true
 	if err != nil {
 		return "", fmt.Errorf("create imported nzb: %w", err)
 	}
@@ -2338,7 +2351,9 @@ func (s *Service) ImportNZBFromPush(ctx context.Context, content []byte, filenam
 		item.State = database.QueuePreflight
 		if s.preflightChecker != nil {
 			if err := s.preflightChecker(bgCtx, item); err != nil {
-				s.promoteNextAfterFailure(bgCtx, current, err.Error()) //nolint:errcheck
+				if _, promoteErr := s.promoteNextAfterFailure(bgCtx, current, err.Error()); promoteErr != nil {
+					s.logger.Error().Err(promoteErr).Msg("sabnzbd: promoteNextAfterFailure failed (preflight)")
+				}
 				return
 			}
 		}
@@ -2348,12 +2363,16 @@ func (s *Service) ImportNZBFromPush(ctx context.Context, content []byte, filenam
 			if reason == "" {
 				reason = "no_publishable_files"
 			}
-			s.promoteNextAfterFailure(bgCtx, current, reason) //nolint:errcheck
+			if _, promoteErr := s.promoteNextAfterFailure(bgCtx, current, reason); promoteErr != nil {
+				s.logger.Error().Err(promoteErr).Msg("sabnzbd: promoteNextAfterFailure failed (no files)")
+			}
 			return
 		}
 		if s.postImportHook != nil {
 			if err := s.postImportHook(bgCtx, item); err != nil {
-				s.promoteNextAfterFailure(bgCtx, current, err.Error()) //nolint:errcheck
+				if _, promoteErr := s.promoteNextAfterFailure(bgCtx, current, err.Error()); promoteErr != nil {
+					s.logger.Error().Err(promoteErr).Msg("sabnzbd: promoteNextAfterFailure failed (post-import)")
+				}
 			}
 		}
 	}()

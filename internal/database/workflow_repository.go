@@ -736,11 +736,12 @@ func (db *DB) ListFailedQueueRetryTargets(ctx context.Context, limit int) ([]Fai
 			coalesce(rc.failure_count, 0) as candidate_failure_count
 		from queue_items q
 		join library_items li on li.id = q.library_item_id
-		left join release_candidates rc on rc.id = q.selected_release_id
+		left join selected_releases sr on sr.id = q.selected_release_id
+		left join release_candidates rc on rc.id = sr.release_candidate_id
 		where li.available = false
 		  and (
 		    q.state = $1
-		    or (q.state = $2 and q.selected_release_id is not null)
+		    or (q.state = $2 and q.selected_release_id is not null and q.updated_at < now() - interval '2 minutes')
 		  )
 		order by q.updated_at asc, q.id asc`
 	args := []any{QueueFailed, QueueRequested}
@@ -2181,7 +2182,9 @@ func (db *DB) EnsureEpisodeLibraryItem(ctx context.Context, tvShowID int64, show
 
 	// Check if a library item already exists for this episode.
 	var existingID int64
-	_ = db.SQL.QueryRowContext(ctx, `SELECT id FROM library_items WHERE episode_id = $1`, episodeID).Scan(&existingID)
+	if scanErr := db.SQL.QueryRowContext(ctx, `SELECT id FROM library_items WHERE episode_id = $1`, episodeID).Scan(&existingID); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return false, scanErr
+	}
 	if existingID > 0 {
 		return false, nil // already tracked
 	}

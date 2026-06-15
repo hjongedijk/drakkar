@@ -545,6 +545,10 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		respondJSON(w, http.StatusAccepted, result)
 	})
 	r.Post("/api/queue/clear-failed", func(w http.ResponseWriter, r *http.Request) {
+		if workflowSvc == nil {
+			respondError(w, http.StatusServiceUnavailable, errors.New("workflow service unavailable"))
+			return
+		}
 		n, err := workflowSvc.ClearFailedQueue(r.Context())
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
@@ -1037,6 +1041,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			bgCtx := context.Background()
 			result, err := workflowSvc.SyncRequests(bgCtx)
 			if err != nil {
+				slog.Error("seerr webhook: SyncRequests failed", "error", err)
 				return
 			}
 			publishMutation("requests.sync_webhook", map[string]any{

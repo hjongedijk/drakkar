@@ -184,8 +184,14 @@ func (c *Client) throttle(ctx context.Context) error {
 		c.rateMu.Unlock()
 		return fmt.Errorf("%w until %s", ErrRateLimited, c.cooldownUntil.UTC().Format(time.RFC3339))
 	}
-	wait := time.Until(c.lastCall.Add(c.searchInterval))
+	now := time.Now()
+	next := c.lastCall.Add(c.searchInterval)
+	if next.Before(now) {
+		next = now
+	}
+	c.lastCall = next
 	c.rateMu.Unlock()
+	wait := time.Until(next)
 	if wait > 0 {
 		select {
 		case <-ctx.Done():
@@ -193,9 +199,6 @@ func (c *Client) throttle(ctx context.Context) error {
 		case <-time.After(wait):
 		}
 	}
-	c.rateMu.Lock()
-	c.lastCall = time.Now()
-	c.rateMu.Unlock()
 	return nil
 }
 

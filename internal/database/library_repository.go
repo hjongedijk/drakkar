@@ -19,7 +19,12 @@ func (db *DB) ListLibraryItems(ctx context.Context) ([]LibraryItemSummary, error
 			coalesce(q.failure_reason, ''),
 			q.selected_release_id
 		from library_items li
-		left join queue_items q on q.library_item_id = li.id
+		left join lateral (
+			select state, failure_reason, selected_release_id
+			from queue_items
+			where library_item_id = li.id
+			order by id desc limit 1
+		) q on true
 		order by li.requested_at desc, li.id desc`)
 	if err != nil {
 		return nil, err
