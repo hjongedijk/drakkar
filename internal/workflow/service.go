@@ -587,7 +587,10 @@ func (s *Service) SearchRecentPending(ctx context.Context, mediaType string) (Bu
 		}
 		profilePrefs := s.profilePreferencesForItem(ctx, target.LibraryItemID, input.MediaType)
 		candidates := buildSearchCandidates(recent, searchRequirements(input), history, profilePrefs, s.indexerLimits, s.loadIndexerPolicyMap(ctx))
-		if len(candidates) == 0 {
+		// Only store candidates when at least one matches this show's title.
+		// If the recent feed has no match (all wrong_title), skip rather than
+		// replacing existing valid candidates with a batch of rejections.
+		if !hasNonRejectedCandidate(candidates) {
 			continue
 		}
 		selectedReleaseID, err := s.repo.ReplaceSearchCandidates(ctx, target.LibraryItemID, candidates)
@@ -1397,6 +1400,15 @@ func buildSearchCandidates(results []hydra.SearchResult, required ranking.Requir
 		return candidates[i].Score > candidates[j].Score
 	})
 	return candidates
+}
+
+func hasNonRejectedCandidate(candidates []database.SearchCandidateRecord) bool {
+	for _, c := range candidates {
+		if !c.Rejected {
+			return true
+		}
+	}
+	return false
 }
 
 func applyUpgradeCustomFormatMinimum(candidates []database.SearchCandidateRecord, current *database.ReleaseSummary, minimumIncrement int) []database.SearchCandidateRecord {

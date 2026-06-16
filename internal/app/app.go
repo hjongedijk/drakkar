@@ -490,11 +490,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 	}
 
-	// runStaleReset resets items that have been stuck in a transitional state
-	// for longer than 10 minutes. This catches workers that died mid-job without
-	// cleaning up state — something that only the startup reset can't handle.
+	// runStaleReset resets items stuck in transitional states.
+	// Idle transitions (selected, searching, etc.) time out after 10 minutes.
+	// Active download states (fetching_nzb, indexing, publishing) time out after
+	// 45 minutes — large episodes can take 20-40 minutes to fetch and import.
 	runStaleReset := func() {
-		n, err := db.ResetStaleQueueItems(ctx, 10*time.Minute)
+		n, err := db.ResetStaleQueueItems(ctx, 10*time.Minute, 45*time.Minute)
 		if err != nil {
 			logger.Error().Err(err).Msg("monitoring: stale reset error")
 			return

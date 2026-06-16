@@ -694,22 +694,28 @@ func (db *DB) ResetStuckQueueItems(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-// ResetStaleQueueItems resets items that have been stuck in a transitional
-// state for longer than staleAfter. Called periodically during operation to
-// recover from workers that died mid-job without cleaning up their state.
-func (db *DB) ResetStaleQueueItems(ctx context.Context, staleAfter time.Duration) (int, error) {
-	cutoff := time.Now().Add(-staleAfter)
+// ResetStaleQueueItems resets items stuck in transitional states.
+// Active download states (fetching_nzb, indexing, publishing) use downloadStaleAfter
+// because large files can take tens of minutes; idle transitions use staleAfter.
+func (db *DB) ResetStaleQueueItems(ctx context.Context, staleAfter, downloadStaleAfter time.Duration) (int, error) {
+	now := time.Now()
+	idleCutoff := now.Add(-staleAfter)
+	downloadCutoff := now.Add(-downloadStaleAfter)
 	result, err := db.SQL.ExecContext(ctx, `
 		UPDATE queue_items SET
 			state = $1,
 			failure_reason = 'stale_worker',
 			updated_at = now()
-		WHERE state IN ($2, $3, $4, $5, $6, $7, $8)
-		  AND updated_at < $9`,
+		WHERE (
+			(state IN ($2, $3, $4) AND updated_at < $7)
+			OR (state IN ($5, $6, $8, $9) AND updated_at < $10)
+		)`,
 		QueueFailed,
-		QueueFetchingNZB, QueueIndexing, QueuePublishing,
-		QueuePreflight, QueueSearching, QueueRanking, QueueSelected,
-		cutoff,
+		QueueFetchingNZB, QueueIndexing, QueuePublishing, // slow: download cutoff
+		QueuePreflight, QueueSearching,                   // fast: idle cutoff
+		downloadCutoff,
+		QueueRanking, QueueSelected, // fast: idle cutoff
+		idleCutoff,
 	)
 	if err != nil {
 		return 0, err
