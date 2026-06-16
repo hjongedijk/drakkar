@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	gobullmq "go.codycody31.dev/gobullmq"
@@ -107,6 +108,11 @@ func (q *WorkQueue) Start(ctx context.Context, fn func(ctx context.Context, libr
 			Concurrency:      q.workers,
 			RemoveOnComplete: &gobullmq.KeepJobs{Count: 0},
 			RemoveOnFail:     &gobullmq.KeepJobs{Count: 0},
+			// A single library item can chain through many expired-NZB candidates,
+			// taking 2-5 minutes. The default 30s lock causes stalled-check re-queues
+			// mid-processing, producing two workers racing on the same item (FK violations).
+			LockDuration:    5 * time.Minute,
+			StalledInterval: 5 * time.Minute,
 		},
 	)
 	if err != nil {
