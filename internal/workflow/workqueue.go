@@ -108,11 +108,16 @@ func (q *WorkQueue) Start(ctx context.Context, fn func(ctx context.Context, libr
 			Concurrency:      q.workers,
 			RemoveOnComplete: &gobullmq.KeepJobs{Count: 0},
 			RemoveOnFail:     &gobullmq.KeepJobs{Count: 0},
-			// A single library item can chain through many expired-NZB candidates,
-			// taking 2-5 minutes. The default 30s lock causes stalled-check re-queues
-			// mid-processing, producing two workers racing on the same item (FK violations).
-			LockDuration:    5 * time.Minute,
+			// A single library item can chain through many expired-NZB candidates and
+			// large file downloads (2-4 GB). 30s default lock causes stalled-check
+			// re-queues mid-processing, racing two workers on the same item (FK violations).
+			// Lock renewal runs every LockDuration/4 so 10-min lock = renewal every 2.5 min.
+			LockDuration:    10 * time.Minute,
 			StalledInterval: 5 * time.Minute,
+			// Allow one recovery attempt before failing: if the stalled check fires
+			// while the lock is briefly between renewals, the job is moved back to
+			// wait instead of immediately to failed (MaxStalledCount=0 default).
+			MaxStalledCount: 1,
 		},
 	)
 	if err != nil {

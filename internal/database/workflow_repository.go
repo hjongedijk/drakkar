@@ -636,9 +636,16 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 			left join episodes ep on ep.id = li.episode_id
 			left join tv_shows tv on tv.id = ep.tv_show_id
 			where li.available = false
-			  and q.selected_release_id is null
-			  and q.state in ($1, $2)
 			  and li.media_type in ('movie', 'episode', 'tv')
+			  and (
+			    -- Normal pending items: no release selected yet.
+			    (q.selected_release_id is null and q.state in ($1, $2)
+			     and (q.state != $2 or q.updated_at < now() - interval '2 hours'))
+			    -- Stranded selected items: release chosen but BullMQ job stalled before
+			    -- download began. Re-pushing is safe: BullMQ deduplicates by libraryItemID
+			    -- so an active job for this item ignores the duplicate push.
+			    or q.state = $3
+			  )
 			  -- Skip movies that haven't been released yet.
 			  and not exists (
 			      select 1 from movies m
@@ -667,11 +674,9 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 			    and tv.id is not null
 			    and coalesce(tv.monitoring_mode, 'all') = 'none'
 			  )
-			  -- Add cooldown for failed items: only retry after 2 hours.
-			  and (q.state != $2 or q.updated_at < now() - interval '2 hours')
 			order by q.library_item_id, q.created_at asc, q.id asc
 		) item
-		order by item.created_at asc, item.id asc`, QueueRequested, QueueFailed)
+		order by item.created_at asc, item.id asc`, QueueRequested, QueueFailed, QueueSelected)
 	if err != nil {
 		return nil, err
 	}
