@@ -2,8 +2,10 @@ package hydra
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -97,7 +99,7 @@ func TestSearchUsesStructuredMovieParams(t *testing.T) {
 		if got := r.URL.Query().Get("t"); got != "movie" {
 			t.Fatalf("expected movie search, got %q", got)
 		}
-		if got := r.URL.Query().Get("cat"); got != "2030,2040,2045,2050,2060" {
+		if got := r.URL.Query().Get("cat"); got != "2000,2010,2020,2030,2040,2045,2050,2060" {
 			t.Fatalf("expected movie categories, got %q", got)
 		}
 		if got := r.URL.Query().Get("imdbid"); got != "1160419" {
@@ -243,5 +245,46 @@ func TestSearchRecentUsesFeedCacheWithinTTL(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {
 		t.Fatalf("expected 1 upstream hit, got %d", got)
+	}
+}
+
+// TestSearchPaginates verifies that Search fetches subsequent pages when the
+// first page is full (100 results) and stops when a partial page is received.
+func TestSearchPaginates(t *testing.T) {
+	// Build a full page of exactly searchPageSize results.
+	items := make([]string, searchPageSize)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"title":"Release%d","link":"http://example/%d","indexer":"hydra","size":100,"epoch":1710000000}`, i, i)
+	}
+	fullPage := `{"results":[` + strings.Join(items, ",") + `]}`
+	partialPage := `{"results":[{"title":"Last","link":"http://example/last","indexer":"hydra","size":100,"epoch":1710000000}]}`
+
+	var offsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset := r.URL.Query().Get("offset")
+		offsets = append(offsets, offset)
+		w.Header().Set("Content-Type", "application/json")
+		if offset == "0" {
+			_, _ = w.Write([]byte(fullPage))
+		} else {
+			_, _ = w.Write([]byte(partialPage))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(config.ServiceConfig{URL: server.URL, APIKey: "abc"})
+	results, err := client.Search(context.Background(), SearchRequest{Query: "Show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offsets) != 2 {
+		t.Fatalf("expected 2 page requests (offsets 0 and 100), got %d: %v", len(offsets), offsets)
+	}
+	if offsets[0] != "0" || offsets[1] != "100" {
+		t.Fatalf("unexpected offsets: %v", offsets)
+	}
+	// 100 results from page 0 + 1 result from page 1
+	if len(results) != searchPageSize+1 {
+		t.Fatalf("expected %d results, got %d", searchPageSize+1, len(results))
 	}
 }

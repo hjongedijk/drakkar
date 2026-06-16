@@ -23,8 +23,14 @@ var defaultSearchInterval = 2 * time.Second
 
 var ErrRateLimited = errors.New("nzbhydra2 rate limited")
 
+const (
+	searchPageSize = 100 // results per page — matches Radarr/Sonarr PageSize
+	searchMaxPages = 10  // max pages per request → 1,000 results cap
+)
+
 var (
-	movieCategories = []string{"2030", "2040", "2045", "2050", "2060"}
+	// Matches Radarr's default categories (2000–2060 full set).
+	movieCategories = []string{"2000", "2010", "2020", "2030", "2040", "2045", "2050", "2060"}
 	tvCategories    = []string{"5030", "5040", "5045", "5080"}
 	rateLimitBackoff = []time.Duration{
 		15 * time.Minute,
@@ -202,13 +208,16 @@ func (c *Client) throttle(ctx context.Context) error {
 	return nil
 }
 
+// Search fetches results from NZBHydra2 with Radarr/Sonarr-compatible pagination.
+// It requests pages of searchPageSize until a partial page is received (indexer
+// exhausted) or searchMaxPages is reached (1,000 result cap). Only the first
+// page triggers the search throttle; subsequent pages are served from
+// NZBHydra2's internal cache and are fetched immediately.
 func (c *Client) Search(ctx context.Context, request SearchRequest) ([]SearchResult, error) {
 	if cached, ok := c.lookupSearchCache(request); ok {
 		return cached, nil
 	}
-	if err := c.throttle(ctx); err != nil {
-		return nil, err
-	}
+
 	u, err := c.apiURL()
 	if err != nil {
 		return nil, err
@@ -240,17 +249,43 @@ func (c *Client) Search(ctx context.Context, request SearchRequest) ([]SearchRes
 			q.Set("ep", fmt.Sprintf("%d", request.EpisodeNumber))
 		}
 	}
-	q.Set("limit", "100")
+	q.Set("limit", fmt.Sprintf("%d", searchPageSize))
 	q.Set("extended", "1")
 	if c.apiKey != "" {
 		q.Set("apikey", c.apiKey)
 	}
-	u.RawQuery = q.Encode()
-	results, err := c.doSearchRequest(ctx, u)
-	if err == nil {
-		c.storeSearchCache(request, results)
+
+	var allResults []SearchResult
+	for page := 0; page < searchMaxPages; page++ {
+		// Throttle only the first page — subsequent pages are served from
+		// NZBHydra2's internal search cache and don't hit the indexers again.
+		if page == 0 {
+			if err := c.throttle(ctx); err != nil {
+				return nil, err
+			}
+		}
+		q.Set("offset", fmt.Sprintf("%d", page*searchPageSize))
+		u.RawQuery = q.Encode()
+
+		pageResults, err := c.doSearchRequest(ctx, u)
+		if err != nil {
+			if page == 0 {
+				return nil, err
+			}
+			// Partial pagination failure: return what we have.
+			break
+		}
+		allResults = append(allResults, pageResults...)
+		// Partial page → indexer has no more results.
+		if len(pageResults) < searchPageSize {
+			break
+		}
 	}
-	return results, err
+
+	if len(allResults) > 0 {
+		c.storeSearchCache(request, allResults)
+	}
+	return allResults, nil
 }
 
 func (c *Client) doSearchRequest(ctx context.Context, u *url.URL) ([]SearchResult, error) {
