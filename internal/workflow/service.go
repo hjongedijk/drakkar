@@ -296,16 +296,13 @@ func (s *Service) SyncRequests(ctx context.Context) (SyncResult, error) {
 			// New items get queued for search immediately; metadata arrives shortly after.
 			if created {
 				result.Created++
-				lid, tmdbID := libraryItemID, request.TMDBID
-				go func() {
-					enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					_ = s.enrichMovieRequest(enrichCtx, lid, tmdbID)
-				}()
-			} else {
-				// Still enrich existing items (noop if already complete).
-				_ = s.enrichMovieRequest(ctx, libraryItemID, request.TMDBID)
 			}
+			lid, tmdbID := libraryItemID, request.TMDBID
+			go func() {
+				enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = s.enrichMovieRequest(enrichCtx, lid, tmdbID)
+			}()
 		case "tv":
 			libraryItemID, created, err := s.repo.UpsertEpisodeRequest(
 				ctx,
@@ -323,15 +320,13 @@ func (s *Service) SyncRequests(ctx context.Context) (SyncResult, error) {
 			}
 			if created {
 				result.Created++
-				lid, tmdbID, tvdbID, epTitle := libraryItemID, request.TMDBID, request.TVDBID, request.EpisodeTitle
-				go func() {
-					enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					_ = s.enrichEpisodeRequest(enrichCtx, lid, tmdbID, tvdbID, epTitle)
-				}()
-			} else {
-				_ = s.enrichEpisodeRequest(ctx, libraryItemID, request.TMDBID, request.TVDBID, request.EpisodeTitle)
 			}
+			lid, tmdbID, tvdbID, epTitle := libraryItemID, request.TMDBID, request.TVDBID, request.EpisodeTitle
+			go func() {
+				enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = s.enrichEpisodeRequest(enrichCtx, lid, tmdbID, tvdbID, epTitle)
+			}()
 		}
 	}
 	return result, nil
