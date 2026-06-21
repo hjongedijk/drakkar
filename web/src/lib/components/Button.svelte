@@ -20,12 +20,30 @@
     border: 1px solid hsl(0 0% 100% / 0.08);
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    box-shadow: 0 8px 24px hsl(215 50% 2% / 0.18);
+    transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: hsl(0 0% 100% / 0.18);
+  }
+
+  .button:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .button:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 3px hsl(var(--primary) / 0.18),
+      0 10px 28px hsl(215 50% 2% / 0.24);
   }
 
   .button:disabled {
     opacity: 0.55;
     cursor: default;
+    box-shadow: none;
   }
 
   .primary {
@@ -40,14 +58,28 @@
     color: hsl(var(--foreground));
   }
 
+  .secondary:hover:not(:disabled) {
+    background: hsl(0 0% 100% / 0.09);
+  }
+
   .ghost {
     background: transparent;
     color: hsl(var(--muted-foreground));
+  }
+
+  .ghost:hover:not(:disabled) {
+    background: hsl(0 0% 100% / 0.04);
+    color: hsl(var(--foreground));
   }
 
   .danger {
     background: hsl(var(--danger) / 0.16);
     border-color: hsl(var(--danger) / 0.32);
     color: hsl(0 96% 82%);
+  }
+
+  .danger:hover:not(:disabled) {
+    background: hsl(var(--danger) / 0.24);
+    border-color: hsl(var(--danger) / 0.42);
   }
 </style>

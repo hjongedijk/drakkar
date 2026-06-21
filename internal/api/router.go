@@ -208,6 +208,18 @@ type SettingsService interface {
 	UpdateSettings(ctx context.Context, cfg config.Settings) (config.Settings, error)
 }
 
+type libraryPageResponse struct {
+	Items          []catalog.MediaCard `json:"items"`
+	Page           int                 `json:"page"`
+	PageSize       int                 `json:"pageSize"`
+	Total          int                 `json:"total"`
+	TotalPages     int                 `json:"totalPages"`
+	TotalMonitored int                 `json:"totalMonitored"`
+	SumAvailable   int                 `json:"sumAvailable"`
+	SumMissing     int                 `json:"sumMissing"`
+	CountActive    int                 `json:"countActive"`
+}
+
 type EventBroker struct {
 	mu      sync.Mutex
 	clients map[chan []byte]struct{}
@@ -276,6 +288,56 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			event[key] = value
 		}
 		broker.Publish(event)
+	}
+	filterLibraryCards := func(items []catalog.MediaCard, kind, state, query string) []catalog.MediaCard {
+		kind = strings.TrimSpace(strings.ToLower(kind))
+		state = strings.TrimSpace(strings.ToLower(state))
+		query = strings.TrimSpace(strings.ToLower(query))
+		activeStates := map[string]struct{}{
+			"searching": {}, "ranking": {}, "selected": {}, "fetching_nzb": {},
+			"indexing": {}, "preflight": {}, "publishing": {}, "downloading": {},
+		}
+		filtered := make([]catalog.MediaCard, 0, len(items))
+		for _, item := range items {
+			mappedType := item.MediaType
+			if mappedType == "episode" {
+				mappedType = "tv"
+			}
+			if kind != "" && kind != "all" && mappedType != kind {
+				continue
+			}
+			_, isActive := activeStates[strings.ToLower(item.QueueState)]
+			switch state {
+			case "", "all":
+			case "available":
+				if !item.Available {
+					continue
+				}
+			case "active":
+				if !isActive {
+					continue
+				}
+			case "failed":
+				if item.QueueState != "failed" {
+					continue
+				}
+			case "missing":
+				if item.Available || isActive {
+					continue
+				}
+			}
+			if query != "" {
+				hay := strings.ToLower(item.Title)
+				if item.Year > 0 {
+					hay += " " + strconv.Itoa(item.Year)
+				}
+				if !strings.Contains(hay, query) {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		return filtered
 	}
 
 	// SABnzbd-compatible API endpoint — allows Radarr/Sonarr to use Drakkar as a download client.
@@ -686,7 +748,66 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 				respondError(w, http.StatusInternalServerError, err)
 				return
 			}
-			respondJSON(w, http.StatusOK, map[string]any{"items": items})
+			// Compute aggregate counts from full unfiltered list for the metric band.
+			activeStateSet := map[string]struct{}{
+				"searching": {}, "ranking": {}, "selected": {}, "fetching_nzb": {},
+				"indexing": {}, "preflight": {}, "publishing": {}, "downloading": {},
+			}
+			var sumAvailable, sumMissing, countActive int
+			for _, item := range items {
+				if item.AvailableCount > 0 {
+					sumAvailable += item.AvailableCount
+				} else if item.Available {
+					sumAvailable++
+				}
+				sumMissing += item.MissingCount
+				if _, isActive := activeStateSet[strings.ToLower(item.QueueState)]; isActive {
+					countActive++
+				}
+			}
+			q := r.URL.Query()
+			filtered := filterLibraryCards(items, q.Get("kind"), q.Get("state"), q.Get("q"))
+			page, _ := strconv.Atoi(q.Get("page"))
+			pageSize, _ := strconv.Atoi(q.Get("pageSize"))
+			if page < 1 {
+				page = 1
+			}
+			if pageSize <= 0 {
+				pageSize = 40
+			}
+			if pageSize > 200 {
+				pageSize = 200
+			}
+			total := len(filtered)
+			totalPages := 1
+			if total > 0 {
+				totalPages = (total + pageSize - 1) / pageSize
+			}
+			if page > totalPages {
+				page = totalPages
+			}
+			start := (page - 1) * pageSize
+			if start < 0 {
+				start = 0
+			}
+			end := start + pageSize
+			if end > total {
+				end = total
+			}
+			if start > end {
+				start = end
+			}
+			respondJSON(w, http.StatusOK, libraryPageResponse{
+				Items:          filtered[start:end],
+				Page:           page,
+				PageSize:       pageSize,
+				Total:          total,
+				TotalPages:     totalPages,
+				TotalMonitored: len(items),
+				SumAvailable:   sumAvailable,
+				SumMissing:     sumMissing,
+				CountActive:    countActive,
+			})
 			return
 		}
 		items, err := queue.ListLibraryItems(r.Context())
@@ -694,7 +815,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusInternalServerError, err)
 			return
 		}
-		respondJSON(w, http.StatusOK, map[string]any{"items": items})
+		respondJSON(w, http.StatusOK, map[string]any{"items": items, "page": 1, "pageSize": len(items), "total": len(items), "totalPages": 1})
 	})
 	r.Get("/api/library/{id}/details", func(w http.ResponseWriter, r *http.Request) {
 		if catalogSvc == nil {

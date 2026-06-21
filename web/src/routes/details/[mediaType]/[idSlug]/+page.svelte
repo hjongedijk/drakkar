@@ -87,7 +87,7 @@
       const year = page.url.searchParams.get('year') ? Number(page.url.searchParams.get('year')) : undefined;
       const [discover, library] = await Promise.all([
         api.discoverDetails(mediaType, { title, year, tmdbId, imdbId }),
-        api.library()
+        api.librarySearch(title ?? imdbId ?? tmdbSlug ?? '')
       ]);
       detail = discover;
       libraryMatch = library.items.find((item) => sameIdentity(item, mediaType, discover.title, discover.year, discover.tmdbId, discover.imdbId)) ?? null;

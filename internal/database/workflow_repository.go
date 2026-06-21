@@ -1739,6 +1739,7 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 				return nil, err
 			}
 		}
+		invalidateBlocklistCache()
 	}
 	if err = preDeleteVFRBySelectedRelease(ctx, tx, selectedReleaseID); err != nil {
 		return nil, err
@@ -1751,8 +1752,12 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 	}
 
 	var nextCandidateID sql.NullInt64
-	if err = tx.QueryRowContext(ctx, `
-		select id
+	blocked, err := loadBlocklistMapUncached(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		select id, title, coalesce(external_url, ''), coalesce(indexer_name, ''), coalesce(size_bytes, 0), coalesce(posted_at, to_timestamp(0))
 		from release_candidates
 		where library_item_id = $1
 		  and rejected = false
@@ -1761,9 +1766,33 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 		         score desc,
 		         posted_at desc nulls last,
 		         created_at asc,
-		         id asc
-		limit 1`, libraryItemID, releaseCandidateID,
-	).Scan(&nextCandidateID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		         id asc`, libraryItemID, releaseCandidateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var candidateID int64
+		var candidate SearchCandidateRecord
+		if err = rows.Scan(&candidateID, &candidate.Title, &candidate.ExternalURL, &candidate.IndexerName, &candidate.SizeBytes, &candidate.PostedAt); err != nil {
+			return nil, err
+		}
+		if blockedReason, isBlocked := blockedReleaseReason(blocked, candidate); isBlocked {
+			if _, err = tx.ExecContext(ctx, `
+				update release_candidates
+				set rejected = true,
+				    reject_reason = $2,
+				    selected = false
+				where id = $1`, candidateID, blockedReason,
+			); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		nextCandidateID = sql.NullInt64{Int64: candidateID, Valid: true}
+		break
+	}
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -2092,6 +2121,37 @@ func loadBlocklistMap(ctx context.Context, tx *sql.Tx) (map[string]string, error
 	blocklistCacheMu.Unlock()
 
 	return out, nil
+}
+
+func loadBlocklistMapUncached(ctx context.Context, tx *sql.Tx) (map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		select key, reason
+		from blocklist_items
+		where expires_at is null or expires_at > now()`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var key, reason string
+		if err := rows.Scan(&key, &reason); err != nil {
+			return nil, err
+		}
+		out[key] = reason
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func invalidateBlocklistCache() {
+	blocklistCacheMu.Lock()
+	blocklistCached = nil
+	blocklistCachedAt = time.Time{}
+	blocklistCacheMu.Unlock()
 }
 
 func (db *DB) BlocklistQueueSelectedRelease(ctx context.Context, queueItemID int64, reason string, ttlDays int) error {

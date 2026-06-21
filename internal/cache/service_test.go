@@ -45,3 +45,34 @@ func TestServicePrune(t *testing.T) {
 		t.Fatalf("unexpected root: %+v", result)
 	}
 }
+
+func TestFileCachePruneNeverReturnsNegativeDeletes(t *testing.T) {
+	root := t.TempDir()
+	cache := NewFileCache(root, 100)
+	if err := os.WriteFile(filepath.Join(root, "a.bin"), []byte("1234"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a concurrent writer landing after the "before" snapshot.
+	before, err := cache.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.bin"), []byte("56789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := cache.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := PruneResult{
+		FilesBefore:  before.Files,
+		FilesAfter:   after.Files,
+		BytesBefore:  before.Bytes,
+		BytesAfter:   after.Bytes,
+		DeletedFiles: max(0, before.Files-after.Files),
+		DeletedBytes: max64(0, before.Bytes-after.Bytes),
+	}
+	if result.DeletedFiles < 0 || result.DeletedBytes < 0 {
+		t.Fatalf("expected clamped deletes, got %+v", result)
+	}
+}

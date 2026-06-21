@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path"
 	"sort"
@@ -1431,10 +1432,16 @@ func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID in
 	}
 	item, err := s.repo.ImportSelectedReleaseNZB(ctx, current.SelectedReleaseID, imported)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, nil
+		}
 		result, err := s.promoteNextAfterFailure(ctx, current, err.Error())
 		return result, nil, err
 	}
 	if err := s.repo.SetImportedNZBIndexed(ctx, item.QueueItemID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, nil
+		}
 		result, err := s.promoteNextAfterFailure(ctx, current, err.Error())
 		return result, nil, err
 	}
@@ -1456,6 +1463,9 @@ func (s *Service) publishImportedRelease(ctx context.Context, p pendingPublish) 
 		return s.retrySelectedReleaseFromStoredNZB(ctx, p.current, 0)
 	}
 	updated, err := s.repo.GetSelectedReleaseSummary(ctx, p.current.SelectedReleaseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err == nil && updated.VirtualFileCount == 0 && strings.TrimSpace(updated.ArchiveRejects) != "" {
 		return s.promoteNextAfterFailure(ctx, p.current, updated.ArchiveRejects)
 	}
@@ -1874,9 +1884,15 @@ func normalizeSearchText(value string) string {
 func (s *Service) importSelectedRelease(ctx context.Context, current database.ReleaseSummary, imported database.ImportedNZB, depth int) (*int64, error) {
 	item, err := s.repo.ImportSelectedReleaseNZB(ctx, current.SelectedReleaseID, imported)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	if err := s.repo.SetImportedNZBIndexed(ctx, item.QueueItemID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	item.State = database.QueuePreflight
@@ -2892,19 +2908,30 @@ func (f HTTPNZBFetcher) Fetch(ctx context.Context, rawURL string) (string, []byt
 	nzbFetchMu.Unlock()
 
 	client := f.Client
-	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
-	}
+	client = prepareNZBHTTPClient(client)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", nil, err
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Drakkar/1.0; +https://github.com/hjongedijk/drakkar)")
+	req.Header.Set("Accept", "application/x-nzb,application/xml,text/xml,application/octet-stream,*/*;q=0.9")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		initialHost := req.URL.Host
+		finalHost := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalHost = resp.Request.URL.Host
+		}
+		if resp.StatusCode == http.StatusForbidden && finalHost != "" && !strings.EqualFold(initialHost, finalHost) {
+			return "", nil, fmt.Errorf("nzb fetch status 403 after redirect to indexer host %s; direct indexer download was forbidden", finalHost)
+		}
 		return "", nil, fmt.Errorf("nzb fetch status %d", resp.StatusCode)
 	}
 	raw, err := io.ReadAll(resp.Body)
@@ -2916,6 +2943,51 @@ func (f HTTPNZBFetcher) Fetch(ctx context.Context, rawURL string) (string, []byt
 		name = "selected.nzb"
 	}
 	return name, raw, nil
+}
+
+func prepareNZBHTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = &http.Client{Timeout: 60 * time.Second}
+	} else {
+		cloned := *base
+		base = &cloned
+	}
+	if base.Jar == nil {
+		if jar, err := cookiejar.New(nil); err == nil {
+			base.Jar = jar
+		}
+	}
+	prevRedirect := base.CheckRedirect
+	base.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 {
+			prev := via[len(via)-1]
+			copyRedirectHeader(req, prev, "User-Agent")
+			copyRedirectHeader(req, prev, "Accept")
+			copyRedirectHeader(req, prev, "Accept-Language")
+			copyRedirectHeader(req, prev, "Cache-Control")
+			copyRedirectHeader(req, prev, "Pragma")
+			if req.Header.Get("Referer") == "" {
+				req.Header.Set("Referer", prev.URL.String())
+			}
+		}
+		if prevRedirect != nil {
+			return prevRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return base
+}
+
+func copyRedirectHeader(req, prev *http.Request, name string) {
+	if req.Header.Get(name) != "" {
+		return
+	}
+	if value := prev.Header.Get(name); value != "" {
+		req.Header.Set(name, value)
+	}
 }
 
 // BackfillMetadataResult summarises a metadata re-enrichment pass.

@@ -259,6 +259,18 @@ export type LibraryItem = {
   episodeNumber?: number;
 };
 
+export type LibraryPage = {
+  items: LibraryItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  totalMonitored: number;
+  sumAvailable: number;
+  sumMissing: number;
+  countActive: number;
+};
+
 export type DashboardHome = {
   hero?: LibraryItem;
   recentlyAdded: LibraryItem[];

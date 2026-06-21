@@ -151,8 +151,8 @@ func (c *FileCache) Prune() (PruneResult, error) {
 		FilesAfter:   after.Files,
 		BytesBefore:  before.Bytes,
 		BytesAfter:   after.Bytes,
-		DeletedFiles: before.Files - after.Files,
-		DeletedBytes: before.Bytes - after.Bytes,
+		DeletedFiles: max(0, before.Files-after.Files),
+		DeletedBytes: max64(0, before.Bytes-after.Bytes),
 		LimitBytes:   c.maxBytes,
 	}, nil
 }
@@ -160,4 +160,18 @@ func (c *FileCache) Prune() (PruneResult, error) {
 func (c *FileCache) pathFor(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(c.root, hex.EncodeToString(sum[:])+".bin")
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

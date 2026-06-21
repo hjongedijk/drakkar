@@ -69,9 +69,95 @@ code, kbd, pre, samp, .mono {
 a { color: inherit; text-decoration: none; }
 
 button, input, textarea, select { font: inherit; color: inherit; }
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
-textarea,
-select { background-color: hsl(0 0% 100% / 0.06); }
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select
+) {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid hsl(var(--border) / 0.95);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, hsl(0 0% 100% / 0.075), hsl(0 0% 100% / 0.045)),
+    hsl(var(--muted) / 0.72);
+  color: hsl(var(--foreground));
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.04),
+    0 0 0 0 hsl(var(--primary) / 0);
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea
+)::placeholder {
+  color: hsl(var(--muted-foreground) / 0.9);
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+select {
+  appearance: none;
+  padding-right: 2.6rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, hsl(var(--muted-foreground)) 50%),
+    linear-gradient(135deg, hsl(var(--muted-foreground)) 50%, transparent 50%),
+    linear-gradient(180deg, hsl(0 0% 100% / 0.075), hsl(0 0% 100% / 0.045));
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px),
+    0 0;
+  background-size:
+    6px 6px,
+    6px 6px,
+    100% 100%;
+  background-repeat: no-repeat;
+}
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select
+):hover {
+  border-color: hsl(var(--primary) / 0.28);
+  background-color: hsl(var(--muted) / 0.88);
+}
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select
+):focus-visible {
+  outline: none;
+  border-color: hsl(var(--primary) / 0.92);
+  box-shadow:
+    inset 0 1px 0 hsl(0 0% 100% / 0.05),
+    0 0 0 3px hsl(var(--primary) / 0.18);
+}
+
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  textarea,
+  select
+):disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: hsl(var(--primary));
+}
 
 img, svg, canvas, video { max-width: 100%; }
 

@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type {
   LibraryItem,
+  LibraryPage,
   MaintenanceResult,
   QueueItem,
   WorkQueueStatus,
@@ -112,7 +113,16 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profileId })
     }),
-  library: () => request<{ items: LibraryItem[] }>('/api/library'),
+  library: (opts?: { page?: number; pageSize?: number; q?: string; kind?: string; state?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.page) params.set('page', String(opts.page));
+    if (opts?.pageSize) params.set('pageSize', String(opts.pageSize));
+    if (opts?.q) params.set('q', opts.q);
+    if (opts?.kind && opts.kind !== 'all') params.set('kind', opts.kind);
+    if (opts?.state && opts.state !== 'all') params.set('state', opts.state);
+    const query = params.toString();
+    return request<LibraryPage>(query ? `/api/library?${query}` : '/api/library');
+  },
   librarySearch: (query: string) => request<{ items: LibraryItem[] }>(`/api/library/search?q=${encodeURIComponent(query)}`),
   libraryDetail: (libraryItemID: number) => request<LibraryDetail>(`/api/library/${libraryItemID}/details`),
   libraryMissing: () => request<{ items: LibraryItem[] }>('/api/library/missing'),

@@ -15,7 +15,6 @@ import (
 
 	"github.com/hjongedijk/drakkar/internal/api"
 	"github.com/hjongedijk/drakkar/internal/blocklist"
-	"github.com/hjongedijk/drakkar/internal/observability"
 	"github.com/hjongedijk/drakkar/internal/cache"
 	"github.com/hjongedijk/drakkar/internal/catalog"
 	"github.com/hjongedijk/drakkar/internal/config"
@@ -30,6 +29,7 @@ import (
 	"github.com/hjongedijk/drakkar/internal/nntp"
 	"github.com/hjongedijk/drakkar/internal/notifications"
 	"github.com/hjongedijk/drakkar/internal/nzb"
+	"github.com/hjongedijk/drakkar/internal/observability"
 	"github.com/hjongedijk/drakkar/internal/opensubtitles"
 	"github.com/hjongedijk/drakkar/internal/plex"
 	"github.com/hjongedijk/drakkar/internal/policy"
@@ -51,8 +51,9 @@ const (
 	maintenanceRecentTVTask    = "hydra_recent_tv"
 	maintenanceRecentMovieTask = "hydra_recent_movie"
 	taskSeerrSync              = "seerr_sync"
-	taskPendingQueuePush = "pending_queue_push"
-	taskRetryFailedQueue = "retry_failed_queue"
+	taskPendingQueuePush       = "pending_queue_push"
+	taskStaleQueueReset        = "stale-queue-reset"
+	taskRetryFailedQueue       = "retry_failed_queue"
 	taskRepublishPending       = "republish_pending"
 	taskHealthCheck            = "health_check"
 	taskNZBHealthCheck         = "nzb_health_check"
@@ -69,7 +70,9 @@ const (
 	backgroundHealthCheckInterval = 15 * time.Minute
 	backgroundDeepHealthBatchSize = 48
 	backgroundDeepHealthSkipDepth = 150
-	pendingQueueDispatchInterval = 1 * time.Minute
+	pendingQueueDispatchInterval  = 1 * time.Minute
+	nonCriticalBacklogThreshold   = 1000
+	nonCriticalQueueDepthLimit    = 500
 )
 
 func boundedTVRSSInterval(minutes int) time.Duration {
@@ -166,11 +169,12 @@ func (s *taskScheduleStatusService) ListTaskSchedules(ctx context.Context) ([]ap
 		{ID: taskPendingQueuePush, Label: "Dispatch Pending Queue", Group: "Indexing", Interval: "1m", Automated: true, LastRunState: "idle"},
 		{ID: maintenanceRecentTVTask, Label: "Recent TV Feed", Group: "Indexing", Interval: fmt.Sprintf("%dm", tvRSSInterval), Automated: true, LastRunState: "idle"},
 		{ID: maintenanceRecentMovieTask, Label: "Recent Movie Feed", Group: "Indexing", Interval: fmt.Sprintf("%dm", movieRSSInterval), Automated: true, LastRunState: "idle"},
+		{ID: taskStaleQueueReset, Label: "Reset Stale Queue Items", Group: "Indexing", Interval: "5m", Automated: true, LastRunState: "idle"},
 		{ID: taskRetryFailedQueue, Label: "Retry Failed Queue", Group: "Indexing", Interval: "15m", Automated: true, LastRunState: "idle"},
 		{ID: taskRepublishPending, Label: "Republish Pending", Group: "Publishing", Interval: "30m", Automated: true, LastRunState: "idle"},
-		{ID: taskResetOrphaned, Label: "Reset Orphaned Available Items", Group: "Publishing", Interval: "Manual", Automated: false, LastRunState: "idle"},
+		{ID: taskResetOrphaned, Label: "Reset Orphaned Available Items", Group: "Publishing", Interval: "30m", Automated: true, LastRunState: "idle"},
 		{ID: taskHealthCheck, Label: "Run Health Check", Group: "Maintenance", Interval: "15m", Automated: true, LastRunState: "idle"},
-		{ID: taskNZBHealthCheck, Label: "Deep NZB Article Check", Group: "Maintenance", Interval: "168h", Automated: false, LastRunState: "idle"},
+		{ID: taskNZBHealthCheck, Label: "Deep NZB Article Check", Group: "Maintenance", Interval: "168h", Automated: true, LastRunState: "idle"},
 		{ID: taskCachePrune, Label: "Prune Block Cache", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
 		{ID: taskOrphanedContent, Label: "Remove Orphaned Content", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
 		{ID: taskBrokenSymlinks, Label: "Remove Broken Media Symlinks", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
@@ -424,23 +428,19 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 				plexCtx, plexCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer plexCancel()
 				var plexErr error
-				if cfg.Plex.SectionKey != "" {
-					// Targeted refresh: scan only the directories of the newly created symlinks.
-					if paths, err := db.GetSymlinkPathsForLibraryItem(plexCtx, libraryItemID); err == nil && len(paths) > 0 {
-						dirs := make(map[string]struct{})
-						for _, p := range paths {
-							dirs[filepath.Dir(p)] = struct{}{}
-						}
-						for dir := range dirs {
-							if plexErr = plexClient.RefreshPath(plexCtx, cfg.Plex.SectionKey, dir); plexErr != nil {
-								break
-							}
-						}
-					} else {
-						plexErr = plexClient.RefreshSection(plexCtx, cfg.Plex.SectionKey)
+				// Targeted refresh: scan only the directories of the newly created symlinks.
+				if paths, err := db.GetSymlinkPathsForLibraryItem(plexCtx, libraryItemID); err == nil && len(paths) > 0 {
+					dirs := make(map[string]struct{})
+					for _, p := range paths {
+						dirs[filepath.Dir(p)] = struct{}{}
 					}
-				} else {
-					plexErr = plexClient.RefreshSection(plexCtx, "")
+					for dir := range dirs {
+						if plexErr = plexClient.RefreshPathAuto(plexCtx, cfg.Plex.SectionKey, dir); plexErr != nil {
+							break
+						}
+					}
+				} else if cfg.Plex.SectionKey != "" {
+					plexErr = plexClient.RefreshSection(plexCtx, cfg.Plex.SectionKey)
 				}
 				if plexErr != nil {
 					logger.Warn().Err(plexErr).Msg("plex library refresh failed")
@@ -605,6 +605,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			logger.Error().Err(err).Msg("monitoring: stale reset error")
 			return
 		}
+		_ = db.TouchMaintenanceCursor(ctx, taskStaleQueueReset, time.Now().UTC().Format(time.RFC3339))
 		if n > 0 {
 			logger.Warn().Int("reset", n).Msg("monitoring: stale queue items reset")
 			broker.Publish(map[string]any{"kind": "queue.stale_reset", "reset": n})
@@ -654,8 +655,24 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 		logger.Info().Int("pending", result.Processed).Int("dispatched", result.Searched).Msg("monitoring: pending dispatch complete")
 	}
+	shouldSkipNonCriticalMaintenance := func(taskName string) (bool, string) {
+		backlog, err := db.CountActiveSearchBacklog(ctx)
+		if err == nil && backlog >= nonCriticalBacklogThreshold {
+			return true, fmt.Sprintf("search backlog high (%d)", backlog)
+		}
+		if wq != nil {
+			if depth := wq.Depth(ctx); depth >= nonCriticalQueueDepthLimit {
+				return true, fmt.Sprintf("work queue depth high (%d)", depth)
+			}
+		}
+		return false, ""
+	}
 
 	runRepublishPass := func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskRepublishPending); skip {
+			logger.Info().Str("task", taskRepublishPending).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
 		result, err := publicationSvc.RepublishPendingLibrary(ctx)
 		if err != nil {
 			logger.Error().Err(err).Msg("monitoring: republish pending error")
@@ -669,6 +686,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	runResetOrphanedPass := func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskResetOrphaned); skip {
+			logger.Info().Str("task", taskResetOrphaned).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
 		result, err := workflowSvc.ResetOrphanedAvailableItems(ctx)
 		if err != nil {
 			logger.Error().Err(err).Msg("monitoring: reset orphaned available items error")
@@ -677,8 +698,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		_ = db.TouchMaintenanceCursor(ctx, taskResetOrphaned, time.Now().UTC().Format(time.RFC3339))
 		logger.Info().Int("found", result.Found).Int("reset", result.Reset).Msg("monitoring: reset orphaned available items complete")
 	}
-	_ = runResetOrphanedPass // exposed via HTTP only; not scheduled automatically
-
 	runHealthCheck := func() {
 		entries, err := db.ListHealthEntries(ctx)
 		if err != nil {
@@ -732,6 +751,10 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	}
 
 	runCachePrune := func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskCachePrune); skip {
+			logger.Info().Str("task", taskCachePrune).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
 		result, err := cacheSvc.Prune(ctx)
 		if err != nil {
 			logger.Error().Err(err).Msg("monitoring: cache prune error")
@@ -763,6 +786,20 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}()
 		logger.Info().Str("task", name).Dur("interval", interval).Bool("startup", runOnStartup).Msg("scheduler: task started")
 	}
+	startRecurringWithStartupDelay := func(name string, interval, startupDelay time.Duration, fn func()) {
+		startRecurring(name, interval, false, fn)
+		go func() {
+			timer := time.NewTimer(startupDelay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				fn()
+			}
+		}()
+		logger.Info().Str("task", name).Dur("startupDelay", startupDelay).Msg("scheduler: delayed startup task armed")
+	}
 
 	// background worker: Seerr sync every 10 min. Sync imports requests only;
 	// discovery happens via recent-feed polling or explicit/manual search.
@@ -779,19 +816,38 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		runRecentPass("movie")
 	})
 
-	startRecurring("stale-queue-reset", 5*time.Minute, true, runStaleReset)
+	startRecurring(taskStaleQueueReset, 5*time.Minute, true, runStaleReset)
 	startRecurring(taskRetryFailedQueue, 15*time.Minute, true, runRetryPass) // was 30m
-	startRecurring(taskRepublishPending, 30*time.Minute, true, runRepublishPass)
-	startRecurring(taskHealthCheck, backgroundHealthCheckInterval, true, runHealthCheck)
+	startRecurringWithStartupDelay(taskRepublishPending, 30*time.Minute, 2*time.Minute, runRepublishPass)
+	startRecurringWithStartupDelay(taskResetOrphaned, 30*time.Minute, 4*time.Minute, runResetOrphanedPass)
+	startRecurringWithStartupDelay(taskHealthCheck, backgroundHealthCheckInterval, 6*time.Minute, runHealthCheck)
 	startRecurring(taskNZBHealthCheck, 168*time.Hour, false, func() {
 		if _, err := maintenanceSvc.DeepNZBHealthCheck(ctx); err != nil {
 			logger.Error().Err(err).Msg("deep nzb health check failed")
 		}
 	})
-	startRecurring(taskCachePrune, 6*time.Hour, true, runCachePrune)
-	startRecurring(taskOrphanedContent, 6*time.Hour, true, func() { _, _ = maintenanceSvc.RemoveOrphanedContent(ctx) })
-	startRecurring(taskBrokenSymlinks, 6*time.Hour, true, func() { _, _ = maintenanceSvc.RemoveBrokenMediaSymlinks(ctx) })
-	startRecurring(taskOrphanedCompleted, 6*time.Hour, true, func() { _, _ = maintenanceSvc.RemoveOrphanedCompletedSymlinks(ctx) })
+	startRecurringWithStartupDelay(taskCachePrune, 6*time.Hour, 8*time.Minute, runCachePrune)
+	startRecurringWithStartupDelay(taskOrphanedContent, 6*time.Hour, 10*time.Minute, func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskOrphanedContent); skip {
+			logger.Info().Str("task", taskOrphanedContent).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
+		_, _ = maintenanceSvc.RemoveOrphanedContent(ctx)
+	})
+	startRecurringWithStartupDelay(taskBrokenSymlinks, 6*time.Hour, 12*time.Minute, func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskBrokenSymlinks); skip {
+			logger.Info().Str("task", taskBrokenSymlinks).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
+		_, _ = maintenanceSvc.RemoveBrokenMediaSymlinks(ctx)
+	})
+	startRecurringWithStartupDelay(taskOrphanedCompleted, 6*time.Hour, 14*time.Minute, func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskOrphanedCompleted); skip {
+			logger.Info().Str("task", taskOrphanedCompleted).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+			return
+		}
+		_, _ = maintenanceSvc.RemoveOrphanedCompletedSymlinks(ctx)
+	})
 	startRecurring(taskFillMissingEpisodes, 6*time.Hour, false, func() {
 		if _, err := workflowSvc.FillMissingEpisodes(ctx); err != nil {
 			logger.Error().Err(err).Msg("fill missing episodes failed")

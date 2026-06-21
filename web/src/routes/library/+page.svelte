@@ -8,14 +8,14 @@
   import Play from '@lucide/svelte/icons/play';
   import Pagination from '$lib/components/Pagination.svelte';
   import PosterCard from '$lib/components/PosterCard.svelte';
-  import { itemStatus, STATUS_ORDER } from '$lib/itemStatus';
   import MetricCard from '$lib/components/MetricCard.svelte';
   import Button from '$lib/components/Button.svelte';
   import { api, subscribeEvents } from '$lib/api';
   import { toastError, toastSuccess } from '$lib/toast';
-  import type { LibraryItem, Status } from '$lib/types';
+  import type { LibraryItem, LibraryPage, Status } from '$lib/types';
 
   let items: LibraryItem[] = [];
+  let libraryPage: LibraryPage = { items: [], page: 1, pageSize: 40, total: 0, totalPages: 1, totalMonitored: 0, sumAvailable: 0, sumMissing: 0, countActive: 0 };
   let status: Status | null = null;
   let loading = true;
   let working = false;
@@ -26,13 +26,18 @@
   let currentPage = 1;
   let lastFilterKey = '';
   let filterKey = '';
+  let requestKey = '';
   const pageSize = 40;
 
   async function loadLibrary() {
     loading = true;
     try {
-      const [statusResult, result] = await Promise.all([api.status(), api.library()]);
+      const [statusResult, result] = await Promise.all([
+        api.status(),
+        api.library({ page: currentPage, pageSize, q: query.trim(), kind, state: stateFilter })
+      ]);
       status = statusResult;
+      libraryPage = result;
       items = result.items;
     } catch (err) {
       toastError(err instanceof Error ? err.message : String(err));
@@ -63,7 +68,6 @@
 
 
   onMount(() => {
-    void loadLibrary();
     const unsub = subscribeEvents(() => { if (!working) void loadLibrary(); });
     const t = window.setInterval(() => void loadLibrary(), 30000);
     return () => { window.clearInterval(t); unsub(); };
@@ -72,6 +76,8 @@
   $: {
     kind = page.url.searchParams.get('kind') ?? 'all';
     query = page.url.searchParams.get('q') ?? '';
+    stateFilter = page.url.searchParams.get('state') ?? 'all';
+    currentPage = Number(page.url.searchParams.get('page') ?? '1') || 1;
     initialized = true;
   }
 
@@ -84,8 +90,10 @@
     else url.searchParams.set('kind', nextKind);
     if (nextQuery.trim()) url.searchParams.set('q', nextQuery.trim());
     else url.searchParams.delete('q');
+    if (nextState === 'all') url.searchParams.delete('state');
+    else url.searchParams.set('state', nextState);
+    url.searchParams.delete('page');
     await goto(`${url.pathname}?${url.searchParams.toString()}`, { replaceState: true, noScroll: true, keepFocus: true });
-    stateFilter = nextState;
   }
 
   $: seerrReady = status?.integrations?.seerr?.configured ?? false;
@@ -93,47 +101,31 @@
 
   const activeStates = ['searching','ranking','selected','fetching_nzb','indexing','preflight','publishing','downloading'];
 
-  $: visibleItems = items.filter(item => {
-    if (kind !== 'all') {
-      const mapped = item.mediaType === 'episode' ? 'tv' : item.mediaType;
-      if (mapped !== kind) return false;
-    }
-    if (stateFilter === 'available'   && !item.available) return false;
-    if (stateFilter === 'active'      && !activeStates.includes(item.queueState)) return false;
-    if (stateFilter === 'failed'      && item.queueState !== 'failed') return false;
-    if (stateFilter === 'missing'     && (item.available || activeStates.includes(item.queueState))) return false;
-    if (query && !`${item.title} ${item.year ?? ''}`.toLowerCase().includes(query.toLowerCase())) return false;
-    return true;
-  });
   $: filterKey = `${kind}|${stateFilter}|${query.trim().toLowerCase()}`;
-  $: if (filterKey !== lastFilterKey) {
-    lastFilterKey = filterKey;
-    currentPage = 1;
+  $: if (initialized && filterKey !== lastFilterKey) lastFilterKey = filterKey;
+  $: {
+    const nextRequestKey = `${kind}|${stateFilter}|${query.trim().toLowerCase()}|${currentPage}`;
+    if (initialized && nextRequestKey !== requestKey) {
+      requestKey = nextRequestKey;
+      void loadLibrary();
+    }
   }
-  $: totalPages = Math.max(1, Math.ceil(visibleSorted.length / pageSize));
-  $: if (currentPage > totalPages) currentPage = totalPages;
-  $: pagedItems = visibleSorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  $: rangeStart = visibleSorted.length ? (currentPage - 1) * pageSize + 1 : 0;
-  $: rangeEnd = Math.min(currentPage * pageSize, visibleSorted.length);
+  $: totalPages = Math.max(1, libraryPage.totalPages || 1);
+  $: pagedItems = items;
+  $: rangeStart = libraryPage.total ? (libraryPage.page - 1) * libraryPage.pageSize + 1 : 0;
+  $: rangeEnd = Math.min(libraryPage.page * libraryPage.pageSize, libraryPage.total);
 
-  // Episode+movie level counts — sum availableCount/missingCount across all items
-  // so a TV show with 8 available and 166 missing contributes 8+166, not just 1 show.
-  // This matches Radarr/Sonarr's per-episode tracking.
-  $: totalAvailable   = items.reduce((n, i) => n + (i.availableCount ?? (i.available ? 1 : 0)), 0);
-  $: totalMissing     = items.reduce((n, i) => n + (i.missingCount ?? 0), 0);
+  // Aggregate counts come from the server (computed over all items, not just the current page).
+  $: totalAvailable = libraryPage.sumAvailable;
+  $: totalMissing   = libraryPage.sumMissing;
+  $: activeCount    = libraryPage.countActive;
 
-  // Card-level counts (for filter tile clickability)
-  $: availableCount   = items.filter(i => i.available && (i.missingCount ?? 0) === 0).length;
-  $: partialCount     = items.filter(i => i.available && (i.missingCount ?? 0) > 0).length;
-  $: activeCount      = items.filter(i => activeStates.includes(i.queueState)).length;
-  $: missingCount     = items.filter(i => !i.available && !activeStates.includes(i.queueState) && i.queueState !== 'failed').length;
-
-  $: visibleSorted = visibleItems.slice().sort((a, b) => {
-    const sa = STATUS_ORDER[itemStatus(a)] ?? 5;
-    const sb = STATUS_ORDER[itemStatus(b)] ?? 5;
-    if (sa !== sb) return sa - sb;
-    return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
-  });
+  async function changePage(nextPage: number) {
+    const url = new URL(page.url);
+    if (nextPage <= 1) url.searchParams.delete('page');
+    else url.searchParams.set('page', String(nextPage));
+    await goto(`${url.pathname}?${url.searchParams.toString()}`, { replaceState: true, noScroll: true, keepFocus: true });
+  }
 </script>
 
 <svelte:head><title>Library — Drakkar</title></svelte:head>
@@ -162,16 +154,16 @@
 
   <!-- Metric band (clickable filter tiles) -->
   <div class="metric-band">
-    <button class="metric-wrap" class:active={stateFilter === 'all'} on:click={() => (stateFilter = 'all')}>
-      <MetricCard label="Monitored" value={items.length} detail="titles tracked" />
+    <button class="metric-wrap" class:active={stateFilter === 'all'} on:click={() => void updateFilters({ state: 'all' })}>
+      <MetricCard label="Monitored" value={libraryPage.totalMonitored} detail="titles tracked" />
     </button>
-    <button class="metric-wrap metric-available" class:active={stateFilter === 'available'} on:click={() => (stateFilter = 'available')}>
+    <button class="metric-wrap metric-available" class:active={stateFilter === 'available'} on:click={() => void updateFilters({ state: 'available' })}>
       <MetricCard label="Available" value={totalAvailable} detail="movies + episodes" accent />
     </button>
-    <button class="metric-wrap metric-active" class:active={stateFilter === 'active'} on:click={() => (stateFilter = 'active')}>
+    <button class="metric-wrap metric-active" class:active={stateFilter === 'active'} on:click={() => void updateFilters({ state: 'active' })}>
       <MetricCard label="Downloading" value={activeCount} detail="in queue" />
     </button>
-    <button class="metric-wrap metric-missing" class:active={stateFilter === 'missing'} on:click={() => (stateFilter = 'missing')}>
+    <button class="metric-wrap metric-missing" class:active={stateFilter === 'missing'} on:click={() => void updateFilters({ state: 'missing' })}>
       <MetricCard label="Missing" value={totalMissing} detail="movies + episodes" />
     </button>
   </div>
@@ -208,11 +200,11 @@
   </div>
 
   <!-- Poster grid -->
-  {#if visibleSorted.length > 0}
+  {#if pagedItems.length > 0}
     <div class="pager">
-      <div class="pager-copy">Showing {rangeStart}-{rangeEnd} of {visibleSorted.length}</div>
+      <div class="pager-copy">Showing {rangeStart}-{rangeEnd} of {libraryPage.total}</div>
       <div class="pager-actions">
-        <Pagination page={currentPage} {totalPages} showFirstLast={false} on:change={(e) => (currentPage = e.detail)} />
+        <Pagination page={currentPage} {totalPages} showFirstLast={false} on:change={(e) => void changePage(e.detail)} />
       </div>
     </div>
     <div class="poster-grid">

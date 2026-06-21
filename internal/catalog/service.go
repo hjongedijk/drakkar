@@ -149,11 +149,11 @@ type SeasonDetail struct {
 }
 
 type EpisodeDetail struct {
-	SeasonNumber   int    `json:"seasonNumber"`
-	EpisodeNumber  int    `json:"episodeNumber"`
-	Title          string `json:"title"`
-	Status         string `json:"status"`
-	LibraryItemID  *int64 `json:"libraryItemId,omitempty"`
+	SeasonNumber  int    `json:"seasonNumber"`
+	EpisodeNumber int    `json:"episodeNumber"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	LibraryItemID *int64 `json:"libraryItemId,omitempty"`
 }
 
 type showEpisodeRow struct {
@@ -348,7 +348,13 @@ func (s *Service) movieCards(ctx context.Context) ([]MediaCard, error) {
 			coalesce(m.poster_url, ''),
 			coalesce(m.backdrop_url, '')
 		from library_items li
-		left join queue_items q on q.library_item_id = li.id
+		left join lateral (
+			select qi.state, qi.failure_reason, qi.selected_release_id
+			from queue_items qi
+			where qi.library_item_id = li.id
+			order by qi.id desc
+			limit 1
+		) q on true
 		join movies m on m.id = li.movie_id
 		order by li.requested_at desc, li.id desc`)
 	if err != nil {
@@ -568,7 +574,13 @@ func (s *Service) recentlyAdded(ctx context.Context) ([]MediaCard, error) {
 		      and not exists (select 1 from symlink_publications sp3 where sp3.library_item_id = li3.id)
 		) src
 		join library_items li on li.id = src.library_item_id
-		left join queue_items q on q.library_item_id = li.id
+		left join lateral (
+			select qi.state, qi.failure_reason, qi.selected_release_id
+			from queue_items qi
+			where qi.library_item_id = li.id
+			order by qi.id desc
+			limit 1
+		) q on true
 		left join movies m on m.id = li.movie_id
 		left join episodes e on e.id = li.episode_id
 		left join tv_shows tv on tv.id = e.tv_show_id
@@ -660,23 +672,23 @@ func (s *Service) recentlyAdded(ctx context.Context) ([]MediaCard, error) {
 
 func (s *Service) LibraryDetail(ctx context.Context, libraryItemID int64) (LibraryDetail, error) {
 	var (
-		detail            LibraryDetail
-		selected          sql.NullInt64
-		movieYear         int
-		movieTMDBID       int64
-		movieIMDbID       string
-		movieOverview     string
-		moviePoster       string
-		movieBackdrop     string
-		showYear          int
-		showTMDBID        int64
-		showTVDBID        int64
-		showIMDbID        string
-		showOverview      string
-		showPoster        string
-		showBackdrop      string
-		tvShowID          int64
-		monitoringMode    string
+		detail         LibraryDetail
+		selected       sql.NullInt64
+		movieYear      int
+		movieTMDBID    int64
+		movieIMDbID    string
+		movieOverview  string
+		moviePoster    string
+		movieBackdrop  string
+		showYear       int
+		showTMDBID     int64
+		showTVDBID     int64
+		showIMDbID     string
+		showOverview   string
+		showPoster     string
+		showBackdrop   string
+		tvShowID       int64
+		monitoringMode string
 	)
 	err := s.db.SQL.QueryRowContext(ctx, `
 		select
@@ -703,7 +715,13 @@ func (s *Service) LibraryDetail(ctx context.Context, libraryItemID int64) (Libra
 			coalesce(e.tv_show_id, 0),
 			coalesce(tv.monitoring_mode, 'all')
 		from library_items li
-		left join queue_items q on q.library_item_id = li.id
+		left join lateral (
+			select qi.state, qi.failure_reason, qi.selected_release_id
+			from queue_items qi
+			where qi.library_item_id = li.id
+			order by qi.id desc
+			limit 1
+		) q on true
 		left join movies m on m.id = li.movie_id
 		left join episodes e on e.id = li.episode_id
 		left join tv_shows tv on tv.id = e.tv_show_id
@@ -1114,7 +1132,7 @@ func queueStateFromRank(rank int, available bool) string {
 type CalendarEntry struct {
 	ID            int64  `json:"id"`
 	LibraryItemID int64  `json:"libraryItemId"`
-	Type          string `json:"type"`        // "movie" or "tv"
+	Type          string `json:"type"` // "movie" or "tv"
 	Title         string `json:"title"`
 	ReleaseDate   string `json:"releaseDate"` // "YYYY-MM-DD"
 	TmdbID        int64  `json:"tmdbId,omitempty"`
