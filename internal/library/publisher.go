@@ -94,7 +94,7 @@ func (p *Publisher) publishSelectedRelease(ctx context.Context, selectedReleaseI
 		target := filepath.Join(p.runtime.FuseMountPath, "content", file.Path)
 		libraryPath := p.libraryPathFor(file)
 		if libraryPath == "" {
-			slog.Warn("skipping host symlink: insufficient metadata", "virtual_file_id", file.VirtualFileID, "file", file.FileName)
+			slog.Debug("skipping host symlink: insufficient metadata", "virtual_file_id", file.VirtualFileID, "file", file.FileName)
 		} else {
 			if err := p.syml.Publish(libraryPath, target); err != nil {
 				return err
@@ -329,7 +329,7 @@ func (p *Publisher) RepublishPendingLibrary(ctx context.Context) (BulkRepublishR
 	for _, target := range targets {
 		result.ProcessedLibrary = append(result.ProcessedLibrary, target.LibraryItemID)
 		if err := p.RepublishLibraryItem(ctx, target.LibraryItemID); err != nil {
-			slog.Warn("republish pending: item failed", "library_item_id", target.LibraryItemID, "err", err)
+			slog.Debug("republish pending: item failed", "library_item_id", target.LibraryItemID, "err", err)
 			result.Failed++
 			result.FailedLibrary = append(result.FailedLibrary, target.LibraryItemID)
 			continue
