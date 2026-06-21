@@ -57,11 +57,13 @@ func Open(cfg config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("open postgres pool: %w", err)
 	}
 	sqlDB := stdlib.OpenDBFromPool(pool)
-	// Disable database/sql's own connection pool so pgxpool is the sole owner.
-	// Without this, sql.DB adds a second cache layer that bypasses pgxpool's
-	// health checks and can re-surface dead connections as "driver: bad conn".
+	// Hand all pooling to pgxpool: set sql.DB idle cache to 0 so every
+	// operation calls pool.Acquire(), which health-checks before returning.
+	// sql.DB's own idle cache only calls ResetSession (checks an in-memory
+	// flag) — it misses TCP-level drops and produces "driver: bad connection".
+	// pgxpool.Acquire() does a real network check, so this eliminates the error.
 	sqlDB.SetMaxOpenConns(int(poolCfg.MaxConns))
-	sqlDB.SetMaxIdleConns(int(poolCfg.MaxConns))
+	sqlDB.SetMaxIdleConns(0)
 	sqlDB.SetConnMaxLifetime(0)
 	sqlDB.SetConnMaxIdleTime(0)
 	return &DB{SQL: sqlDB, vfCache: make(map[int64]*cachedVF)}, nil
