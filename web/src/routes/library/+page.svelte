@@ -22,11 +22,7 @@
   let query = '';
   let kind = 'all';
   let stateFilter = 'all';
-  let initialized = false;
   let currentPage = 1;
-  let lastFilterKey = '';
-  let filterKey = '';
-  let requestKey = '';
   const pageSize = 40;
 
   async function loadLibrary() {
@@ -66,66 +62,60 @@
     finally { working = false; }
   }
 
+  // Sync current state back to the URL for bookmarking / browser history.
+  function syncUrl() {
+    const url = new URL(page.url);
+    if (kind === 'all') url.searchParams.delete('kind');
+    else url.searchParams.set('kind', kind);
+    if (query.trim()) url.searchParams.set('q', query.trim());
+    else url.searchParams.delete('q');
+    if (stateFilter === 'all') url.searchParams.delete('state');
+    else url.searchParams.set('state', stateFilter);
+    if (currentPage <= 1) url.searchParams.delete('page');
+    else url.searchParams.set('page', String(currentPage));
+    void goto(`${url.pathname}?${url.searchParams.toString()}`, { replaceState: true, noScroll: true, keepFocus: true });
+  }
+
+  function updateFilters(next: { kind?: string; q?: string; state?: string }) {
+    kind = next.kind ?? kind;
+    query = next.q ?? query;
+    stateFilter = next.state ?? stateFilter;
+    currentPage = 1;
+    void loadLibrary();
+    syncUrl();
+  }
+
+  function changePage(nextPage: number) {
+    currentPage = nextPage;
+    void loadLibrary();
+    syncUrl();
+  }
 
   onMount(() => {
+    // Seed state from URL so bookmarked/shared links work.
+    kind = page.url.searchParams.get('kind') ?? 'all';
+    query = page.url.searchParams.get('q') ?? '';
+    stateFilter = page.url.searchParams.get('state') ?? 'all';
+    currentPage = Number(page.url.searchParams.get('page') ?? '1') || 1;
+
+    void loadLibrary();
+
     const unsub = subscribeEvents(() => { if (!working) void loadLibrary(); });
     const t = window.setInterval(() => void loadLibrary(), 30000);
     return () => { window.clearInterval(t); unsub(); };
   });
 
-  $: {
-    kind = page.url.searchParams.get('kind') ?? 'all';
-    query = page.url.searchParams.get('q') ?? '';
-    stateFilter = page.url.searchParams.get('state') ?? 'all';
-    currentPage = Number(page.url.searchParams.get('page') ?? '1') || 1;
-    initialized = true;
-  }
-
-  async function updateFilters(next: { kind?: string; q?: string; state?: string }) {
-    const url = new URL(page.url);
-    const nextKind = next.kind ?? kind;
-    const nextQuery = next.q ?? query;
-    const nextState = next.state ?? stateFilter;
-    if (nextKind === 'all') url.searchParams.delete('kind');
-    else url.searchParams.set('kind', nextKind);
-    if (nextQuery.trim()) url.searchParams.set('q', nextQuery.trim());
-    else url.searchParams.delete('q');
-    if (nextState === 'all') url.searchParams.delete('state');
-    else url.searchParams.set('state', nextState);
-    url.searchParams.delete('page');
-    await goto(`${url.pathname}?${url.searchParams.toString()}`, { replaceState: true, noScroll: true, keepFocus: true });
-  }
-
   $: seerrReady = status?.integrations?.seerr?.configured ?? false;
   $: hydraReady = status?.integrations?.nzbhydra2?.configured ?? false;
 
-  const activeStates = ['searching','ranking','selected','fetching_nzb','indexing','preflight','publishing','downloading'];
-
-  $: filterKey = `${kind}|${stateFilter}|${query.trim().toLowerCase()}`;
-  $: if (initialized && filterKey !== lastFilterKey) lastFilterKey = filterKey;
-  $: {
-    const nextRequestKey = `${kind}|${stateFilter}|${query.trim().toLowerCase()}|${currentPage}`;
-    if (initialized && nextRequestKey !== requestKey) {
-      requestKey = nextRequestKey;
-      void loadLibrary();
-    }
-  }
   $: totalPages = Math.max(1, libraryPage.totalPages || 1);
   $: pagedItems = items;
   $: rangeStart = libraryPage.total ? (libraryPage.page - 1) * libraryPage.pageSize + 1 : 0;
   $: rangeEnd = Math.min(libraryPage.page * libraryPage.pageSize, libraryPage.total);
 
-  // Aggregate counts come from the server (computed over all items, not just the current page).
   $: totalAvailable = libraryPage.sumAvailable;
   $: totalMissing   = libraryPage.sumMissing;
   $: activeCount    = libraryPage.countActive;
-
-  async function changePage(nextPage: number) {
-    const url = new URL(page.url);
-    if (nextPage <= 1) url.searchParams.delete('page');
-    else url.searchParams.set('page', String(nextPage));
-    await goto(`${url.pathname}?${url.searchParams.toString()}`, { replaceState: true, noScroll: true, keepFocus: true });
-  }
 </script>
 
 <svelte:head><title>Library — Drakkar</title></svelte:head>
@@ -183,11 +173,11 @@
       <input
         bind:value={query}
         placeholder="Search titles…"
-        on:change={() => initialized && void updateFilters({ q: query })}
+        on:change={() => void updateFilters({ q: query })}
         on:keydown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault();
-            if (initialized) void updateFilters({ q: query });
+            void updateFilters({ q: query });
           }
         }}
       />
