@@ -2625,3 +2625,64 @@ func (db *DB) SetTVShowMonitoringMode(ctx context.Context, tvShowID int64, mode 
 		`UPDATE tv_shows SET monitoring_mode = $1 WHERE id = $2`, mode, tvShowID)
 	return err
 }
+
+// ListMovieTmdbIDs returns the TMDB ID for every tracked movie (tmdb_id > 0).
+func (db *DB) ListMovieTmdbIDs(ctx context.Context) ([]int64, error) {
+	rows, err := db.SQL.QueryContext(ctx, `select tmdb_id from movies where tmdb_id > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// TVShowSeerrInfo holds the data needed to push a TV show to Seerr.
+type TVShowSeerrInfo struct {
+	TMDBID  int64
+	Seasons []int
+}
+
+// ListTVShowTmdbIDsWithSeasons returns each tracked TV show's TMDB ID and the
+// distinct season numbers (>0) present in the episodes table.
+func (db *DB) ListTVShowTmdbIDsWithSeasons(ctx context.Context) ([]TVShowSeerrInfo, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		select distinct ts.tmdb_id, ep.season_number
+		from tv_shows ts
+		join episodes ep on ep.tv_show_id = ts.id
+		where ts.tmdb_id > 0
+		  and ep.season_number > 0
+		order by ts.tmdb_id, ep.season_number`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seasonsByShow := make(map[int64][]int)
+	var order []int64
+	for rows.Next() {
+		var tmdbID int64
+		var season int
+		if err := rows.Scan(&tmdbID, &season); err != nil {
+			return nil, err
+		}
+		if _, seen := seasonsByShow[tmdbID]; !seen {
+			order = append(order, tmdbID)
+		}
+		seasonsByShow[tmdbID] = append(seasonsByShow[tmdbID], season)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]TVShowSeerrInfo, 0, len(order))
+	for _, tmdbID := range order {
+		out = append(out, TVShowSeerrInfo{TMDBID: tmdbID, Seasons: seasonsByShow[tmdbID]})
+	}
+	return out, nil
+}

@@ -143,6 +143,7 @@ type WorkflowService interface {
 	ImportNZBFromPush(ctx context.Context, content []byte, filename, mediaType string) (string, error)
 	ResetLibraryItem(ctx context.Context, libraryItemID int64) error
 	ResetOrphanedAvailableItems(ctx context.Context) (workflow.ResetOrphanedAvailableItemsResult, error)
+	PushMissingLibraryItemsToSeerr(ctx context.Context) (workflow.PushMissingToSeerrResult, error)
 }
 
 type PublicationService interface {
@@ -1214,6 +1215,18 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		}
 		publishMutation("requests.sync", map[string]any{"seen": result.Seen, "created": result.Created})
 		respondJSON(w, http.StatusAccepted, result)
+	})
+	r.Post("/api/requests/push-library", func(w http.ResponseWriter, r *http.Request) {
+		if workflowSvc == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
+			return
+		}
+		result, err := workflowSvc.PushMissingLibraryItemsToSeerr(r.Context())
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, result)
 	})
 	r.Post("/api/discover/request", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {

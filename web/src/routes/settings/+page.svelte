@@ -174,6 +174,7 @@
 
   const taskDefs: TaskDef[] = [
     { id: 'seerr_sync', label: 'Sync Seerr Requests', description: 'Import new and updated requests from Seerr.', group: 'Indexing', interval: '10m', manual: true, run: async () => { const r = await api.syncRequests(); return `seen ${r.seen}, created ${r.created}`; } },
+    { id: 'seerr_push_library', label: 'Push Library to Seerr', description: 'Push library items that are missing from Seerr as new requests.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { const r = await api.pushMissingToSeerr(); return `movies pushed ${r.moviesPushed}, shows pushed ${r.showsPushed}`; } },
     { id: 'pending_queue_push', label: 'Dispatch Pending Queue', description: 'Push pending library rows into the bounded background work queue.', group: 'Indexing', interval: '1m', manual: false, run: async () => '' },
     { id: 'stale-queue-reset', label: 'Reset Stale Queue Items', description: 'Reset queue rows that have been stuck too long in transitional states.', group: 'Indexing', interval: '5m', manual: false, run: async () => '' },
     { id: 'search-pending', label: 'Search Pending Items', description: 'Search missing library items in bounded batches.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { await api.searchPendingLibrary(); return 'started in background'; } },

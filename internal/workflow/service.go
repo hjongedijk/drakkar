@@ -90,6 +90,8 @@ type Repository interface {
 	DeleteSymlinkPublicationsForLibraryItem(ctx context.Context, libraryItemID int64) ([]string, error)
 	ResetLibraryItemState(ctx context.Context, libraryItemID int64) error
 	ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error)
+	ListMovieTmdbIDs(ctx context.Context) ([]int64, error)
+	ListTVShowTmdbIDsWithSeasons(ctx context.Context) ([]database.TVShowSeerrInfo, error)
 }
 
 type SeerrClient interface {
@@ -478,6 +480,77 @@ func (s *Service) CreateSeerrSeasonRequest(ctx context.Context, tmdbID int64, se
 		return SyncResult{}, err
 	}
 	return s.syncRequestsWithRetry(ctx)
+}
+
+type PushMissingToSeerrResult struct {
+	MoviesPushed  int `json:"moviesPushed"`
+	ShowsPushed   int `json:"showsPushed"`
+	MoviesSkipped int `json:"moviesSkipped"`
+	ShowsSkipped  int `json:"showsSkipped"`
+}
+
+// PushMissingLibraryItemsToSeerr pushes any movie or TV show that is in Drakkar's
+// library but absent from Seerr's current request list.
+func (s *Service) PushMissingLibraryItemsToSeerr(ctx context.Context) (PushMissingToSeerrResult, error) {
+	if s == nil || s.seerr == nil {
+		return PushMissingToSeerrResult{}, fmt.Errorf("seerr client unavailable")
+	}
+
+	// Fetch what Seerr currently has.
+	existing, err := s.seerr.PendingRequests(ctx)
+	if err != nil {
+		return PushMissingToSeerrResult{}, fmt.Errorf("fetch seerr requests: %w", err)
+	}
+	seerrMovies := make(map[int64]struct{}, len(existing))
+	seerrTV := make(map[int64]struct{}, len(existing))
+	for _, r := range existing {
+		switch strings.ToLower(r.Type) {
+		case "movie":
+			seerrMovies[r.TMDBID] = struct{}{}
+		case "tv":
+			seerrTV[r.TMDBID] = struct{}{}
+		}
+	}
+
+	var result PushMissingToSeerrResult
+
+	// Push missing movies.
+	movieIDs, err := s.repo.ListMovieTmdbIDs(ctx)
+	if err != nil {
+		return result, fmt.Errorf("list movie tmdb ids: %w", err)
+	}
+	for _, tmdbID := range movieIDs {
+		if _, ok := seerrMovies[tmdbID]; ok {
+			result.MoviesSkipped++
+			continue
+		}
+		if err := s.seerr.CreateRequest(ctx, "movie", tmdbID); err != nil {
+			s.logger.Warn().Err(err).Int64("tmdbID", tmdbID).Msg("push to seerr: movie create failed")
+			result.MoviesSkipped++
+			continue
+		}
+		result.MoviesPushed++
+	}
+
+	// Push missing TV shows.
+	shows, err := s.repo.ListTVShowTmdbIDsWithSeasons(ctx)
+	if err != nil {
+		return result, fmt.Errorf("list tv show tmdb ids: %w", err)
+	}
+	for _, show := range shows {
+		if _, ok := seerrTV[show.TMDBID]; ok {
+			result.ShowsSkipped++
+			continue
+		}
+		if err := s.seerr.CreateTVSeasonRequest(ctx, show.TMDBID, show.Seasons); err != nil {
+			s.logger.Warn().Err(err).Int64("tmdbID", show.TMDBID).Msg("push to seerr: tv create failed")
+			result.ShowsSkipped++
+			continue
+		}
+		result.ShowsPushed++
+	}
+
+	return result, nil
 }
 
 func (s *Service) enrichMovieRequest(ctx context.Context, libraryItemID, tmdbID int64) error {
