@@ -454,7 +454,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.RetryQueueItem(r.Context(), id)
+		result, err := workflowSvc.RetryQueueItem(workflow.WithAsyncDownload(r.Context()), id)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -467,7 +467,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.RetryFailedQueue(r.Context())
+		result, err := workflowSvc.RetryFailedQueue(workflow.WithAsyncDownload(r.Context()))
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -492,7 +492,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.ManageQueueItem(r.Context(), id, body.Action)
+		result, err := workflowSvc.ManageQueueItem(workflow.WithAsyncDownload(r.Context()), id, body.Action)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -517,7 +517,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, errors.New("queueItemIds required"))
 			return
 		}
-		result, err := workflowSvc.ManageQueueItems(r.Context(), body.QueueItemIDs, body.Action)
+		result, err := workflowSvc.ManageQueueItems(workflow.WithAsyncDownload(r.Context()), body.QueueItemIDs, body.Action)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -537,7 +537,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.ManageFailedQueue(r.Context(), body.Action)
+		result, err := workflowSvc.ManageFailedQueue(workflow.WithAsyncDownload(r.Context()), body.Action)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -1196,7 +1196,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.SelectRelease(r.Context(), id)
+		result, err := workflowSvc.SelectRelease(workflow.WithAsyncDownload(r.Context()), id)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -1220,7 +1220,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&payload)
 		}
-		result, err := workflowSvc.RejectRelease(r.Context(), id, payload.Reason)
+		result, err := workflowSvc.RejectRelease(workflow.WithAsyncDownload(r.Context()), id, payload.Reason)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
@@ -1256,7 +1256,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusBadRequest, err)
 			return
 		}
-		result, err := workflowSvc.SkipRelease(r.Context(), id)
+		result, err := workflowSvc.SkipRelease(workflow.WithAsyncDownload(r.Context()), id)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return

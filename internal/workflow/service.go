@@ -249,6 +249,21 @@ const (
 
 type completionFastLaneKey struct{}
 
+// asyncDownloadKey marks a context as HTTP-initiated: fetchAndImportSelectedRelease
+// submits the job and returns immediately, keeping HTTP handlers responsive regardless
+// of queue depth.  Use WithAsyncDownload in router call sites; background workers omit it.
+type asyncDownloadKey struct{}
+
+// WithAsyncDownload returns ctx marked for non-blocking download submission.
+func WithAsyncDownload(ctx context.Context) context.Context {
+	return context.WithValue(ctx, asyncDownloadKey{}, true)
+}
+
+func isAsyncDownload(ctx context.Context) bool {
+	v, _ := ctx.Value(asyncDownloadKey{}).(bool)
+	return v
+}
+
 // downloadJob is a unit of work submitted to the download dispatcher.
 type downloadJob struct {
 	ctx               context.Context
@@ -1337,21 +1352,31 @@ func (s *Service) fetchAndImportSelectedRelease(ctx context.Context, selectedRel
 		}
 		return s.publishImportedRelease(ctx, *importedRelease)
 	}
-	// Submit to the priority download queue and block until the dedicated worker
-	// processes this job. Priority 0 (fast-lane) executes before priority 1 (BullMQ)
-	// so "wanted" items always run ahead of bulk backfill — like SABnzbd priority.
+	// Priority 0 (fast-lane) for user-triggered and HTTP-initiated downloads.
 	priority := 1
-	if isCompletionFastLane(ctx) {
+	if isCompletionFastLane(ctx) || isAsyncDownload(ctx) {
 		priority = 0
+	}
+	// HTTP-initiated downloads use a detached context so the download survives
+	// when the HTTP request is cancelled or times out after we return.
+	jobCtx := ctx
+	if isAsyncDownload(ctx) {
+		jobCtx = context.Background()
 	}
 	resultCh := make(chan downloadJobResult, 1)
 	s.downloader.submit(downloadJob{
-		ctx:               ctx,
+		ctx:               jobCtx,
 		selectedReleaseID: selectedReleaseID,
 		priority:          priority,
 		enqueuedAt:        time.Now(),
 		resultCh:          resultCh,
 	})
+	if isAsyncDownload(ctx) {
+		// Fire-and-forget: drain the result channel in the background so the
+		// download worker is never blocked sending its result.
+		go func() { <-resultCh }()
+		return nil, nil
+	}
 	select {
 	case result := <-resultCh:
 		return result.selectedReleaseID, result.err
