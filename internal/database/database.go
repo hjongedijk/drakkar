@@ -13,7 +13,7 @@ import (
 
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/stream"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -39,19 +39,31 @@ type DB struct {
 
 func Open(cfg config.DatabaseConfig) (*DB, error) {
 	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=disable", cfg.Host, cfg.Port, cfg.Name, cfg.Username, cfg.Password)
-	pgxCfg, err := pgx.ParseConfig(dsn)
+	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres config: %w", err)
 	}
-	// idle_in_transaction_session_timeout prevents connection-pool self-deadlock:
-	// if a goroutine holds an open transaction (due to a missed Rollback) while
-	// blocked waiting for a second connection, postgres kills the idle transaction
-	// after 60s so the waiting goroutine can proceed.
-	pgxCfg.RuntimeParams["idle_in_transaction_session_timeout"] = "60000"
-	sqlDB := stdlib.OpenDB(*pgxCfg)
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(8)
-	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+	// idle_in_transaction_session_timeout: kill connections that are idle inside
+	// a transaction for >60s to prevent pool self-deadlock if Rollback is missed.
+	poolCfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "60000"
+	// pgxpool health-checks each connection before returning it to callers,
+	// avoiding "driver: bad connection" errors from silently dropped idle conns.
+	// 25 max gives headroom for 12 BullMQ workers + download/monitor/HTTP load.
+	poolCfg.MaxConns = 25
+	poolCfg.MinConns = 2
+	poolCfg.MaxConnIdleTime = 5 * time.Minute
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres pool: %w", err)
+	}
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	// Disable database/sql's own connection pool so pgxpool is the sole owner.
+	// Without this, sql.DB adds a second cache layer that bypasses pgxpool's
+	// health checks and can re-surface dead connections as "driver: bad conn".
+	sqlDB.SetMaxOpenConns(int(poolCfg.MaxConns))
+	sqlDB.SetMaxIdleConns(int(poolCfg.MaxConns))
+	sqlDB.SetConnMaxLifetime(0)
+	sqlDB.SetConnMaxIdleTime(0)
 	return &DB{SQL: sqlDB, vfCache: make(map[int64]*cachedVF)}, nil
 }
 
