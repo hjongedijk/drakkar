@@ -91,15 +91,23 @@ services:
       retries: 5
 
   seerr:
-    image: ghcr.io/sct/seerr:latest
+    image: ghcr.io/seerr-team/seerr:latest
     container_name: drakkar_seerr
-    restart: unless-stopped
+    init: true
     environment:
-      TZ: Europe/Amsterdam
+      - LOG_LEVEL=debug
+      - TZ=Europe/Amsterdam
     ports:
       - "5055:5055"
     volumes:
       - ./data/seerr:/app/config
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/settings/public || exit 1
+      start_period: 20s
+      timeout: 3s
+      interval: 15s
+      retries: 3
+    restart: unless-stopped
 
   nzbhydra2:
     image: lscr.io/linuxserver/nzbhydra2:latest

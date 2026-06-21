@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/stream"
@@ -48,8 +49,9 @@ func Open(cfg config.DatabaseConfig) (*DB, error) {
 	// after 60s so the waiting goroutine can proceed.
 	pgxCfg.RuntimeParams["idle_in_transaction_session_timeout"] = "60000"
 	sqlDB := stdlib.OpenDB(*pgxCfg)
-	sqlDB.SetMaxOpenConns(12)
-	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(8)
+	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	return &DB{SQL: sqlDB, vfCache: make(map[int64]*cachedVF)}, nil
 }
 

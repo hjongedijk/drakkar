@@ -1985,13 +1985,24 @@ func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current data
 		// later queue pass. This keeps throughput fair when backlog is large.
 		if _, depthErr := s.repo.FailSelectedReleaseAndPromoteNext(dbCtx, current.SelectedReleaseID, reason); depthErr != nil {
 			s.logger.Error().Err(depthErr).Int64("selectedReleaseId", current.SelectedReleaseID).Msg("workqueue: depth-limit fail failed")
+			_ = s.repo.MarkLibrarySearchFailed(dbCtx, current.LibraryItemID, reason)
 		}
 		return nil, nil
 	}
 	metrics.M.FallbackReleaseAttempts.Add(1)
 	next, promoteErr := s.repo.FailSelectedReleaseAndPromoteNext(dbCtx, current.SelectedReleaseID, reason)
 	if promoteErr != nil {
-		return nil, promoteErr
+		// Transient DB errors (e.g. "driver: bad connection") must not leave the item
+		// stuck in fetching_nzb. Retry once after a short pause; if it fails again, use
+		// the simpler MarkLibrarySearchFailed as a last resort so the queue_item at
+		// least moves to failed state and can be retried by the stale-recovery pass.
+		time.Sleep(300 * time.Millisecond)
+		next, promoteErr = s.repo.FailSelectedReleaseAndPromoteNext(dbCtx, current.SelectedReleaseID, reason)
+		if promoteErr != nil {
+			s.logger.Error().Err(promoteErr).Int64("libraryItemId", current.LibraryItemID).Msg("workqueue: promote failed twice — falling back to direct fail")
+			_ = s.repo.MarkLibrarySearchFailed(dbCtx, current.LibraryItemID, reason)
+			return nil, nil
+		}
 	}
 	if next == nil {
 		return nil, nil
