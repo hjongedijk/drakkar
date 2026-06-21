@@ -712,9 +712,8 @@ func (db *DB) CountActiveSearchBacklog(ctx context.Context) (int, error) {
 		join library_items li on li.id = q.library_item_id
 		where li.available = false
 		  and li.media_type in ('movie', 'episode', 'tv')
-		  and q.state in ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		  and q.state in ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		QueueRequested,
-		QueueFailed,
 		QueueSelected,
 		QueueFetchingNZB,
 		QueuePreflight,
