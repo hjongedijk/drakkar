@@ -13,6 +13,7 @@ import (
 
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/stream"
+	pgx "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -49,6 +50,15 @@ func Open(cfg config.DatabaseConfig) (*DB, error) {
 	// pgxpool health-checks each connection before returning it to callers,
 	// avoiding "driver: bad connection" errors from silently dropped idle conns.
 	// 25 max gives headroom for 12 BullMQ workers + download/monitor/HTTP load.
+	// Ping before returning any idle connection from the pool. pgxpool's
+	// background health check only runs every HealthCheckPeriod (default 1min),
+	// so a silently-dropped TCP connection can slip through and cause
+	// "driver: bad connection" on the first I/O. BeforeAcquire forces a
+	// round-trip on every acquire — sub-millisecond on a local Docker network
+	// but guarantees the connection is alive before the caller sees it.
+	poolCfg.BeforeAcquire = func(ctx context.Context, c *pgx.Conn) bool {
+		return c.Ping(ctx) == nil
+	}
 	poolCfg.MaxConns = 25
 	poolCfg.MinConns = 2
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
