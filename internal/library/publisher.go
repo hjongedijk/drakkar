@@ -326,7 +326,6 @@ func (p *Publisher) RepublishPendingLibrary(ctx context.Context) (BulkRepublishR
 		return BulkRepublishResult{}, err
 	}
 	result := BulkRepublishResult{Processed: len(targets)}
-	slog.Info("republish pending: starting", "count", len(targets))
 	for _, target := range targets {
 		result.ProcessedLibrary = append(result.ProcessedLibrary, target.LibraryItemID)
 		if err := p.RepublishLibraryItem(ctx, target.LibraryItemID); err != nil {
@@ -404,7 +403,7 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 			}
 		}
 		_ = p.repo.FulfillEpisodeLibraryItem(ctx, m.LibraryItemID, selectedReleaseID, m.VirtualFileID)
-		slog.Info("season pack: fulfilled episode",
+		slog.Debug("season pack: fulfilled episode",
 			"library_item_id", m.LibraryItemID,
 			"season", m.SeasonNumber, "episode", m.EpisodeNumber,
 			"file", m.FileName)

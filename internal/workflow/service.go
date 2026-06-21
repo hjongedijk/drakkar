@@ -1949,7 +1949,6 @@ func (s *Service) promoteNextAfterFailureDepth(ctx context.Context, current data
 	s.logger.Warn().
 		Int64("libraryItemId", current.LibraryItemID).
 		Str("release", current.Title).
-		Str("url", current.ExternalURL).
 		Str("reason", reason).
 		Msg("workqueue: release failed — checking for next candidate")
 	// Use a fresh context for DB cleanup if the caller's context was already

@@ -111,7 +111,7 @@ func (f *SegmentFetcher) FetchRangeInfoPriority(ctx context.Context, segment str
 		if errors.Is(err, context.Canceled) {
 			slog.Debug("nntp fetch canceled", "messageID", segment.MessageID)
 		} else {
-			slog.Warn("nntp fetch failed", "messageID", segment.MessageID, "err", err)
+			slog.Debug("nntp fetch failed", "messageID", segment.MessageID, "err", err)
 		}
 		return nil, stream.SegmentSpan{}, fmt.Errorf("fetch decoded article %s: %w", segment.MessageID, err)
 	}
