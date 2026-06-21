@@ -105,7 +105,14 @@ func (f *SegmentFetcher) FetchRangeInfoPriority(ctx context.Context, segment str
 	}
 	if err != nil {
 		metrics.M.NNTPFetchFailures.Add(1)
-		slog.Error("nntp fetch failed", "messageID", segment.MessageID, "err", err)
+		// context.Canceled is normal: parallel connections race to fetch the
+		// same segment; the losers are cancelled after the winner succeeds.
+		// Log those at DEBUG to avoid flooding the console.
+		if errors.Is(err, context.Canceled) {
+			slog.Debug("nntp fetch canceled", "messageID", segment.MessageID)
+		} else {
+			slog.Warn("nntp fetch failed", "messageID", segment.MessageID, "err", err)
+		}
 		return nil, stream.SegmentSpan{}, fmt.Errorf("fetch decoded article %s: %w", segment.MessageID, err)
 	}
 	metrics.M.NNTPArticlesFetched.Add(1)

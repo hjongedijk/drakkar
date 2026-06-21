@@ -11,8 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/hjongedijk/drakkar/internal/api"
 	"github.com/hjongedijk/drakkar/internal/blocklist"
+	"github.com/hjongedijk/drakkar/internal/observability"
 	"github.com/hjongedijk/drakkar/internal/cache"
 	"github.com/hjongedijk/drakkar/internal/catalog"
 	"github.com/hjongedijk/drakkar/internal/config"
@@ -192,6 +195,10 @@ func (s *taskScheduleStatusService) SetRSSIntervals(tvMinutes, movieMinutes int)
 }
 
 func Run(ctx context.Context, logger zerolog.Logger) error {
+	// Route all slog output (nntp, library, api packages) through the same
+	// zerolog logger so every line shares the same color/format.
+	slog.SetDefault(slog.New(observability.NewSlogHandler(logger)))
+
 	rt := config.DefaultRuntime()
 	if env := os.Getenv("DRAKKAR_SETTINGS_PATH"); env != "" {
 		rt.SettingsPath = env
