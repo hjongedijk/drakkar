@@ -15,7 +15,7 @@ COPY --from=frontend /web/build ./internal/frontend/build
 RUN go build -o /out/drakkar ./cmd/drakkar
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates fuse3 par2cmdline 7zip
+RUN apk add --no-cache ca-certificates fuse3 par2cmdline 7zip tzdata
 WORKDIR /app
 COPY --from=build /out/drakkar /app/drakkar
 COPY --from=build /src/migrations /app/migrations

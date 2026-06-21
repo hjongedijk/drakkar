@@ -1544,33 +1544,39 @@ func largestFileFirstSegment(files []database.ImportedNZBFile) string {
 	return best.Segments[0].MessageID
 }
 
-// dedupeSearchResults collapses results that are the same release posted to
-// multiple indexers. Two results are considered the same when their normalized
-// titles match and their sizes are within 5% of each other. Within each group
-// the entry with the highest IndexerScore wins; Grabs breaks ties.
+// dedupeSearchResults removes true duplicates — the same release reported more
+// than once by the same indexer. Results from different indexers for the same
+// release are intentionally kept as separate candidates so that the fallback
+// chain (FailSelectedReleaseAndPromoteNext) can try every available source
+// before giving up. Within a (title, size, indexer) group the entry with the
+// highest IndexerScore wins; Grabs breaks ties.
 func dedupeSearchResults(results []hydra.SearchResult) []hydra.SearchResult {
+	type seenKey struct {
+		title   string
+		indexer string
+	}
 	type sizeBucket struct {
 		size int64
 		best hydra.SearchResult
 	}
-	// Map by normalized title → slice of per-size buckets.
-	// O(1) outer lookup; inner slice is tiny in practice (1-2 entries per title).
-	seen := make(map[string][]sizeBucket, len(results))
+	// Map by (normalized title, indexer) → slice of per-size buckets.
+	// Different indexers for the same release are distinct candidates.
+	seen := make(map[seenKey][]sizeBucket, len(results))
 	for _, r := range results {
-		nt := normReleaseTitle(r.Title)
+		key := seenKey{normReleaseTitle(r.Title), r.Indexer}
 		matched := false
-		for i := range seen[nt] {
-			if sizesClose(r.SizeBytes, seen[nt][i].size) {
-				if r.IndexerScore > seen[nt][i].best.IndexerScore ||
-					(r.IndexerScore == seen[nt][i].best.IndexerScore && r.Grabs > seen[nt][i].best.Grabs) {
-					seen[nt][i].best = r
+		for i := range seen[key] {
+			if sizesClose(r.SizeBytes, seen[key][i].size) {
+				if r.IndexerScore > seen[key][i].best.IndexerScore ||
+					(r.IndexerScore == seen[key][i].best.IndexerScore && r.Grabs > seen[key][i].best.Grabs) {
+					seen[key][i].best = r
 				}
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			seen[nt] = append(seen[nt], sizeBucket{size: r.SizeBytes, best: r})
+			seen[key] = append(seen[key], sizeBucket{size: r.SizeBytes, best: r})
 		}
 	}
 	out := make([]hydra.SearchResult, 0, len(results))
@@ -1635,12 +1641,16 @@ func buildSearchCandidates(results []hydra.SearchResult, required ranking.Requir
 		known := history[strings.TrimSpace(result.Link)]
 		// Sonarr/Radarr behaviour: blocklist on the first download failure.
 		// Any URL that has already failed is rejected immediately so it won't be
-		// re-selected. Exception: interrupted_by_restart / stale_worker means the
-		// server was restarted mid-download — not a real failure, give it another try.
+		// re-selected. Exceptions:
+		//   - interrupted_by_restart / stale_worker: server restarted mid-download, not a real failure.
+		//   - status 403: indexer quota exhausted (e.g. NZBFinder) — temporary, quota may have reset
+		//     by the time the next search cycle runs. Let it through with a score penalty from
+		//     parseCandidate so it ranks below fresh results but remains a viable fallback.
 		if known.FailureCount >= 1 {
 			lr := strings.ToLower(known.LastFailureReason)
 			isRestartInterruption := strings.Contains(lr, "interrupted_by_restart") || strings.Contains(lr, "stale_worker")
-			if !isRestartInterruption {
+			isTemporaryQuota := strings.Contains(lr, "status 403")
+			if !isRestartInterruption && !isTemporaryQuota {
 				candidates = append(candidates, database.SearchCandidateRecord{
 					Title:             result.Title,
 					ExternalURL:       result.Link,

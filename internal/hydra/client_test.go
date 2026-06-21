@@ -143,7 +143,7 @@ func TestSearchUsesStructuredTVParams(t *testing.T) {
 		if got := r.URL.Query().Get("t"); got != "tvsearch" {
 			t.Fatalf("expected tvsearch, got %q", got)
 		}
-		if got := r.URL.Query().Get("cat"); got != "5030,5040,5045,5080" {
+		if got := r.URL.Query().Get("cat"); got != "5000" {
 			t.Fatalf("expected tv categories, got %q", got)
 		}
 		if got := r.URL.Query().Get("imdbid"); got != "9140554" {
@@ -174,7 +174,7 @@ func TestSearchRecentUsesCategoryOnly(t *testing.T) {
 		if got := r.URL.Query().Get("t"); got != "search" {
 			t.Fatalf("expected search, got %q", got)
 		}
-		if got := r.URL.Query().Get("cat"); got != "5030,5040,5045,5080" {
+		if got := r.URL.Query().Get("cat"); got != "5000" {
 			t.Fatalf("expected tv category, got %q", got)
 		}
 		if got := r.URL.Query().Get("q"); got != "" {
@@ -245,6 +245,48 @@ func TestSearchRecentUsesFeedCacheWithinTTL(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {
 		t.Fatalf("expected 1 upstream hit, got %d", got)
+	}
+}
+
+func TestSearchDefaultDoesNotCache(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.ServiceConfig{URL: server.URL, APIKey: "abc"})
+	if _, err := client.Search(context.Background(), SearchRequest{MediaType: "movie", Query: "Dune 2021"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Search(context.Background(), SearchRequest{MediaType: "movie", Query: "Dune 2021"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("expected 2 upstream hits with default no-cache, got %d", got)
+	}
+}
+
+func TestSearchRecentDefaultDoesNotCache(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.ServiceConfig{URL: server.URL, APIKey: "abc"})
+	if _, err := client.SearchRecent(context.Background(), "tv"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SearchRecent(context.Background(), "tv"); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("expected 2 upstream hits with default no-cache, got %d", got)
 	}
 }
 

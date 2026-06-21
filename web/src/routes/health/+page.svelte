@@ -33,6 +33,8 @@
   let consistency: ConsistencyIssue[] = [];
   let loading = true;
   let checking = false;
+  let republishing = false;
+  let resettingOrphaned = false;
 
   async function load() {
     loading = true;
@@ -65,6 +67,28 @@
     }
   }
 
+  async function republishPending() {
+    republishing = true;
+    try {
+      await api.republishPendingLibrary();
+      toastSuccess('Republish Pending started in background');
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : String(err));
+      republishing = false;
+    }
+  }
+
+  async function resetOrphanedAvailable() {
+    resettingOrphaned = true;
+    try {
+      await api.resetOrphanedAvailableItems();
+      toastSuccess('Reset Orphaned Available Items started in background');
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : String(err));
+      resettingOrphaned = false;
+    }
+  }
+
   function fmtDate(value?: string, fallback = 'Never') {
     if (!value) return fallback;
     const date = new Date(value);
@@ -90,7 +114,15 @@
 
   onMount(() => {
     void load();
-    return subscribeEvents(() => {
+    return subscribeEvents((event) => {
+      if (event?.kind === 'library.republish_pending') {
+        toastSuccess(`Republish Pending complete: processed ${event.processed}, republished ${event.republished}, failed ${event.failed}`);
+        republishing = false;
+      }
+      if (event?.kind === 'library.reset_orphaned') {
+        toastSuccess(`Reset Orphaned complete: found ${event.found}, reset ${event.reset}, failed ${event.failed}`);
+        resettingOrphaned = false;
+      }
       if (!checking) void load();
     });
   });
@@ -103,7 +135,7 @@
     <RefreshCw size={14} />
     Refresh
   </Button>
-  <Button kind="primary" on:click={runCheck} disabled={loading || checking}>
+  <Button kind="primary" on:click={runCheck} disabled={loading || checking || republishing || resettingOrphaned}>
     <ShieldCheck size={14} />
     {checking ? 'Running…' : 'Run Health Check'}
   </Button>
@@ -151,8 +183,19 @@
       <p>
         {consistencyIssues} library item(s) are marked <strong>available</strong> but have no published symlink.
         These items may show as available in the library but will not stream.
-        Use <strong>Reset</strong> on the item in the library to re-queue them, or trigger <strong>Republish Pending</strong> from the Tasks tab.
+        Use <strong>Republish Pending</strong> when the selected release is still recoverable. Use
+        <strong> Reset Orphaned Available</strong> when the item needs to be re-queued for a fresh search and download.
       </p>
+      <div class="attention-actions">
+        <Button kind="secondary" on:click={republishPending} disabled={loading || checking || republishing || resettingOrphaned}>
+          <RefreshCw size={14} />
+          {republishing ? 'Republishing…' : 'Republish Pending'}
+        </Button>
+        <Button kind="primary" on:click={resetOrphanedAvailable} disabled={loading || checking || republishing || resettingOrphaned}>
+          <AlertTriangle size={14} />
+          {resettingOrphaned ? 'Resetting…' : 'Reset Orphaned Available'}
+        </Button>
+      </div>
     </div>
   {/if}
 
@@ -341,6 +384,13 @@
   .attention p {
     margin: 0;
     color: hsl(var(--foreground));
+  }
+
+  .attention-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
   }
 
   .info-card {

@@ -90,6 +90,8 @@
   let blockReasonFilter = 'all';
   let blockSortCol: 'reason' | 'key' | 'expires' | 'createdAt' = 'createdAt';
   let blockSortDir: 'asc' | 'desc' = 'desc';
+  let blShowAllReasons = false;
+  const BL_REASON_CHIP_LIMIT = 10;
   type BlocklistEditor = {
     id?: number;
     keyType: 'raw' | 'external_url' | 'release_signature';
@@ -1544,6 +1546,9 @@
 
         <!-- Stats chips -->
         {#if blStats}
+          {@const sortedReasons = Object.entries(blStats.byReason).sort(([,a],[,b]) => b - a)}
+          {@const visibleReasons = blShowAllReasons ? sortedReasons : sortedReasons.slice(0, BL_REASON_CHIP_LIMIT)}
+          {@const hiddenCount = sortedReasons.length - BL_REASON_CHIP_LIMIT}
           <div class="bl-stats-row">
             <div class="bl-stat-chip">
               <span class="bl-stat-num">{blStats.active}</span>
@@ -1553,12 +1558,20 @@
               <span class="bl-stat-num">{blStats.expired}</span>
               <span class="bl-stat-lbl">expired</span>
             </div>
-            {#each Object.entries(blStats.byReason).sort(([,a],[,b]) => b - a) as [reason, count]}
-              <button class="bl-reason-chip" class:active={blockReasonFilter === reason} on:click={() => { blockReasonFilter = blockReasonFilter === reason ? 'all' : reason; blPage = 1; void loadBlocklist(); }}>
-                <span class="reason-badge reason-{reason.split('_')[0]}">{reason}</span>
+            {#each visibleReasons as [reason, count]}
+              {@const label = reason.length > 40 ? reason.slice(0, 37) + '…' : reason}
+              {@const colorKey = reason.split(':')[0].split('_')[0]}
+              <button class="bl-reason-chip" class:active={blockReasonFilter === reason} title={reason}
+                on:click={() => { blockReasonFilter = blockReasonFilter === reason ? 'all' : reason; blPage = 1; void loadBlocklist(); }}>
+                <span class="reason-badge reason-{colorKey}">{label}</span>
                 <span class="bl-reason-count">{count}</span>
               </button>
             {/each}
+            {#if !blShowAllReasons && hiddenCount > 0}
+              <button class="bl-show-more" on:click={() => blShowAllReasons = true}>+{hiddenCount} more</button>
+            {:else if blShowAllReasons && sortedReasons.length > BL_REASON_CHIP_LIMIT}
+              <button class="bl-show-more" on:click={() => blShowAllReasons = false}>show less</button>
+            {/if}
           </div>
         {/if}
 
@@ -2996,6 +3009,18 @@
   }
 
   .bl-stats-text { color: hsl(var(--muted-foreground)); font-size: 12px; white-space: nowrap; }
+
+  .bl-show-more {
+    padding: 4px 10px;
+    border-radius: 12px;
+    border: 1px dashed hsl(0 0% 100% / 0.15);
+    background: none;
+    color: hsl(var(--muted-foreground));
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .bl-show-more:hover { color: hsl(var(--foreground)); border-color: hsl(0 0% 100% / 0.3); }
 
   .bl-filter-active {
     display: flex;

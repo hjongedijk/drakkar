@@ -6,6 +6,8 @@ services:
     environment:
       DRAKKAR_SETTINGS_PATH: /app/data/settings.json
       DRAKKAR_HTTP_ADDR: :8080
+      DRAKKAR_LOG_FORMAT: console
+      TZ: Europe/Amsterdam
     volumes:
       - ./data:/app/data
       - /mnt/drakkar:/mnt/drakkar:rshared
@@ -35,6 +37,8 @@ services:
     restart: unless-stopped
     init: true
     stop_grace_period: 10s
+    environment:
+      TZ: Europe/Amsterdam
     volumes:
       - /mnt:/mnt:rshared
       - ./data/rclone/rclone.conf:/config/rclone/rclone.conf
@@ -62,6 +66,8 @@ services:
       POSTGRES_DB: drakkar
       POSTGRES_USER: drakkar
       POSTGRES_PASSWORD: change-me
+      TZ: Europe/Amsterdam
+      PGTZ: Europe/Amsterdam
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -74,6 +80,8 @@ services:
     image: valkey/valkey:8-alpine
     container_name: drakkar_valkey
     restart: unless-stopped
+    environment:
+      TZ: Europe/Amsterdam
     volumes:
       - ./data/valkey:/data
     healthcheck:
@@ -86,6 +94,8 @@ services:
     image: ghcr.io/sct/seerr:latest
     container_name: drakkar_seerr
     restart: unless-stopped
+    environment:
+      TZ: Europe/Amsterdam
     ports:
       - "5055:5055"
     volumes:
@@ -95,6 +105,8 @@ services:
     image: lscr.io/linuxserver/nzbhydra2:latest
     container_name: drakkar_nzbhydra2
     restart: unless-stopped
+    environment:
+      TZ: Europe/Amsterdam
     ports:
       - "5076:5076"
     volumes:

@@ -52,8 +52,20 @@ func (db *DB) ListBlocklistItemsPaged(ctx context.Context, f BlocklistFilter) (B
 		where = append(where, fmt.Sprintf("(lower(key) like $%d or lower(reason) like $%d)", len(args), len(args)))
 	}
 	if f.Reason != "" {
-		args = append(args, f.Reason)
-		where = append(where, fmt.Sprintf("reason = $%d", len(args)))
+		r := strings.TrimSpace(f.Reason)
+		// Normalized preflight/strict-health categories: reason stored in DB contains
+		// a unique segment ID that was stripped for display. Use LIKE to match both
+		// old entries (with segment ID) and new entries (without).
+		if (strings.HasPrefix(r, "preflight: ") || strings.HasPrefix(r, "strict health: ")) &&
+			!strings.Contains(r, " segment ") {
+			prefix := r[:strings.Index(r, ": ")+2] // "preflight: " or "strict health: "
+			suffix := r[len(prefix):]
+			args = append(args, prefix+"%", "%"+suffix+"%")
+			where = append(where, fmt.Sprintf("(reason LIKE $%d AND reason LIKE $%d)", len(args)-1, len(args)))
+		} else {
+			args = append(args, r)
+			where = append(where, fmt.Sprintf("reason = $%d", len(args)))
+		}
 	}
 
 	whereClause := "WHERE " + strings.Join(where, " AND ")
@@ -275,10 +287,30 @@ func (db *DB) BlocklistStats(ctx context.Context) (BlocklistStats, error) {
 		return s, err
 	}
 	rows, err := db.SQL.QueryContext(ctx, `
-		select reason, count(*) as cnt
-		from blocklist_items
-		where expires_at is null or expires_at > now()
-		group by reason
+		select norm_reason, sum(cnt)::int as cnt
+		from (
+			select
+				case
+					when reason ~ '^preflight: (first|last) segment \S+ unavailable: '
+					then regexp_replace(
+						regexp_replace(reason,
+							'^preflight: (first|last) segment \S+ unavailable: ',
+							'preflight: '),
+						': [^: @]+@\S+$', '')
+					when reason ~ '^strict health: (first|last) segment \S+ unavailable: '
+					then regexp_replace(
+						regexp_replace(reason,
+							'^strict health: (first|last) segment \S+ unavailable: ',
+							'strict health: '),
+						': [^: @]+@\S+$', '')
+					else reason
+				end as norm_reason,
+				count(*) as cnt
+			from blocklist_items
+			where expires_at is null or expires_at > now()
+			group by reason
+		) sub
+		group by norm_reason
 		order by cnt desc`)
 	if err != nil {
 		return s, err

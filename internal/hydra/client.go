@@ -30,8 +30,9 @@ const (
 
 var (
 	// Matches Radarr's default categories (2000–2060 full set).
-	movieCategories  = []string{"2000", "2010", "2020", "2030", "2040", "2045", "2050", "2060"}
-	tvCategories     = []string{"5030", "5040", "5045", "5080"}
+	movieCategories = []string{"2000", "2010", "2020", "2030", "2040", "2045", "2050", "2060"}
+	// Use root TV category so Hydra/indexers can return any TV subcategory.
+	tvCategories     = []string{"5000"}
 	rateLimitBackoff = []time.Duration{
 		15 * time.Minute,
 		30 * time.Minute,
@@ -91,12 +92,12 @@ type SearchRequest struct {
 
 func NewClient(cfg config.ServiceConfig) *Client {
 	searchCacheTTL := time.Duration(cfg.SearchCacheTTLSeconds) * time.Second
-	if searchCacheTTL <= 0 {
-		searchCacheTTL = time.Hour
+	if searchCacheTTL < 0 {
+		searchCacheTTL = 0
 	}
 	feedCacheTTL := time.Duration(cfg.FeedCacheTTLSeconds) * time.Second
-	if feedCacheTTL <= 0 {
-		feedCacheTTL = time.Hour
+	if feedCacheTTL < 0 {
+		feedCacheTTL = 0
 	}
 	feedMaxResults := cfg.FeedMaxResults
 	if feedMaxResults <= 0 {

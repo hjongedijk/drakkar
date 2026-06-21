@@ -60,22 +60,26 @@ func NewWorkQueue(workers int, queueClient, workerClient redis.Cmdable) (*WorkQu
 	}, nil
 }
 
-// Push enqueues a library item search job. High-priority items (priority > 0)
-// are placed ahead of normal items. Duplicate job IDs are ignored by BullMQ,
-// so pushing an already-queued item is safe and cheap.
+// Push enqueues a library item search job. Lower caller priority values are
+// more urgent (0 beats 10), matching the workflow service call sites. BullMQ
+// uses 1 as its highest explicit priority, so we shift the caller value by 1.
+// Duplicate job IDs are ignored by BullMQ, so pushing an already-queued item
+// is safe and cheap.
 func (q *WorkQueue) Push(ctx context.Context, libraryItemID int64, priority int) {
-	// BullMQ/gobullmq uses lower numbers as higher priority (1 beats 10).
-	// Keep the service-level contract simple: bigger caller priority = more urgent.
-	bullPriority := 10
-	if priority > 0 {
-		bullPriority = 1
-	}
+	bullPriority := toBullPriority(priority)
 	_, _ = q.queue.Add(ctx, "search", searchJob{LibraryItemID: libraryItemID},
 		gobullmq.AddWithJobID(fmt.Sprintf("%d", libraryItemID)),
 		gobullmq.AddWithPriority(bullPriority),
 		gobullmq.AddWithRemoveOnComplete(),
 		gobullmq.AddWithRemoveOnFail(),
 	)
+}
+
+func toBullPriority(priority int) int {
+	if priority < 0 {
+		priority = 0
+	}
+	return priority + 1
 }
 
 // Depth returns the number of jobs currently waiting in the queue.

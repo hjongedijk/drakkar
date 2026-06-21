@@ -118,7 +118,7 @@ func (db *DB) PreflightCheckFirstSegments(ctx context.Context, nzbDocumentID int
 			defer func() { <-sem }()
 			if err := checker.Exists(checkCtx, pair.first); err != nil {
 				errOnce.Do(func() {
-					firstErr = fmt.Errorf("preflight: first segment %s unavailable: %w", pair.first, err)
+					firstErr = sanitizedSegmentErr("preflight", "first", err)
 					cancel()
 				})
 				return
@@ -126,7 +126,7 @@ func (db *DB) PreflightCheckFirstSegments(ctx context.Context, nzbDocumentID int
 			if pair.last != pair.first {
 				if err := checker.Exists(checkCtx, pair.last); err != nil {
 					errOnce.Do(func() {
-						firstErr = fmt.Errorf("preflight: last segment %s unavailable: %w", pair.last, err)
+						firstErr = sanitizedSegmentErr("preflight", "last", err)
 						cancel()
 					})
 				}
@@ -151,15 +151,30 @@ func (db *DB) StrictCheckFirstSegments(ctx context.Context, nzbDocumentID int64)
 	}
 	for _, p := range pairs {
 		if _, err := sizer.DecodedSize(ctx, p.first); err != nil {
-			return fmt.Errorf("strict health: first segment %s unavailable: %w", p.first, err)
+			return sanitizedSegmentErr("strict health", "first", err)
 		}
 		if p.last != p.first {
 			if _, err := sizer.DecodedSize(ctx, p.last); err != nil {
-				return fmt.Errorf("strict health: last segment %s unavailable: %w", p.last, err)
+				return sanitizedSegmentErr("strict health", "last", err)
 			}
 		}
 	}
 	return nil
+}
+
+// sanitizedSegmentErr builds a blocklist-safe error for a failed segment check.
+// It omits the raw message ID (which would create one unique reason per segment)
+// and strips trailing message IDs from the wrapped error text.
+func sanitizedSegmentErr(kind, pos string, err error) error {
+	msg := err.Error()
+	// Strip trailing bare message ID: "... (cached): msgid@host" → "... (cached)"
+	if i := strings.LastIndex(msg, ": "); i > 0 {
+		suffix := msg[i+2:]
+		if strings.ContainsRune(suffix, '@') && !strings.ContainsRune(suffix, ' ') {
+			msg = msg[:i]
+		}
+	}
+	return fmt.Errorf("%s: %s segment unavailable: %s", kind, pos, msg)
 }
 
 // CalibrateAllNZBOffsets runs CalibrateNZBOffsets for every NZB document in the
