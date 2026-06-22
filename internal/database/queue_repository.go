@@ -179,7 +179,7 @@ func (db *DB) CreateImportedNZB(ctx context.Context, imported ImportedNZB) (Queu
 	if err = tx.QueryRowContext(ctx, `
 		insert into nzb_documents (selected_release_id, file_name, xml)
 		values ($1, $2, $3)
-		returning id`, selectedReleaseID, imported.FileName, imported.XML).Scan(&nzbDocumentID); err != nil {
+		returning id`, selectedReleaseID, imported.FileName, compressNZBXML(imported.XML)).Scan(&nzbDocumentID); err != nil {
 		return QueueSnapshot{}, err
 	}
 
@@ -299,7 +299,7 @@ func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID in
 	if err = tx.QueryRowContext(ctx, `
 		insert into nzb_documents (selected_release_id, external_url, file_name, xml)
 		values ($1, $2, $3, $4)
-		returning id`, selectedReleaseID, imported.ExternalURL, imported.FileName, imported.XML).Scan(&nzbDocumentID); err != nil {
+		returning id`, selectedReleaseID, imported.ExternalURL, imported.FileName, compressNZBXML(imported.XML)).Scan(&nzbDocumentID); err != nil {
 		return QueueSnapshot{}, err
 	}
 
@@ -519,7 +519,7 @@ func (db *DB) StoreRawNZBDocument(ctx context.Context, selectedReleaseID int64, 
 		where not exists (
 			select 1 from nzb_documents where selected_release_id = $1
 		)`,
-		selectedReleaseID, externalURL, fileName, xml)
+		selectedReleaseID, externalURL, fileName, compressNZBXML(xml))
 	return err
 }
 
@@ -581,6 +581,10 @@ func (db *DB) ListNZBMountEntries(ctx context.Context) ([]NZBMountEntry, error) 
 		var item NZBMountEntry
 		if err := rows.Scan(&item.DocumentID, &item.FileName, &item.XML, &item.State); err != nil {
 			return nil, err
+		}
+		var decErr error
+		if item.XML, decErr = decompressNZBXML(item.XML); decErr != nil {
+			return nil, decErr
 		}
 		out = append(out, item)
 	}

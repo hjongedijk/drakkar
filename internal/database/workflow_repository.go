@@ -1239,6 +1239,9 @@ func (db *DB) GetStoredNZBDocument(ctx context.Context, selectedReleaseID int64)
 		}
 		return StoredNZBDocument{}, err
 	}
+	if item.XML, err = decompressNZBXML(item.XML); err != nil {
+		return StoredNZBDocument{}, err
+	}
 	if strings.TrimSpace(item.FileName) == "" {
 		item.FileName = "selected.nzb"
 	}
