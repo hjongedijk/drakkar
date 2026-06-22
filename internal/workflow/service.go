@@ -800,15 +800,35 @@ func (s *Service) SearchPendingLibrary(ctx context.Context) (BulkSearchResult, e
 		result.ProcessedItems = append(result.ProcessedItems, target.LibraryItemID)
 		// If the work queue is running, push items for concurrent processing
 		// rather than searching sequentially.
-		// Items with a selected release are ready to download — push with
-		// priority=0 (BullMQ high-priority) so they drain before new searches.
+		// Resume items (selected release already chosen) bypass BullMQ entirely:
+		// submitting via BullMQ adds 30-min lock latency for a <1ms async dispatch.
+		// Direct submission to the downloadDispatcher is idempotent — submit()
+		// returns false if the release is already in-flight, so this is safe to
+		// call every dispatch cycle.
 		// Items needing a Hydra search get priority=10 (BullMQ lower-priority).
 		if s.WorkQueue != nil {
-			priority := 10
-			if target.Selected {
-				priority = 0
+			if target.SelectedReleaseID > 0 {
+				// Cooldown: don't re-submit releases that were updated within the last
+				// 30 minutes. This prevents burst downloads on restart (inFlight map
+				// is cleared) and rapid re-cycling after preflight failures (failure →
+				// promote → new sr_id with updated_at=now → immediate re-download).
+				if time.Since(target.UpdatedAt) < 30*time.Minute {
+					continue
+				}
+				resultCh := make(chan downloadJobResult, 1)
+				if s.downloader.submit(downloadJob{
+					ctx:               context.Background(),
+					selectedReleaseID: target.SelectedReleaseID,
+					priority:          0,
+					enqueuedAt:        time.Now(),
+					resultCh:          resultCh,
+				}) {
+					go func() { <-resultCh }()
+				}
+				result.Searched++
+				continue
 			}
-			s.WorkQueue.Push(ctx, target.LibraryItemID, priority)
+			s.WorkQueue.Push(ctx, target.LibraryItemID, 10)
 			result.Searched++
 			continue
 		}

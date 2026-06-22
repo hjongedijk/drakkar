@@ -114,12 +114,12 @@ func (q *WorkQueue) Start(ctx context.Context, fn func(ctx context.Context, libr
 			Concurrency:      q.workers,
 			RemoveOnComplete: &gobullmq.KeepJobs{Count: 0},
 			RemoveOnFail:     &gobullmq.KeepJobs{Count: 0},
-			// A single item can spend a long time in fetch/import/publish while
-			// walking multiple bad candidates. Keep the lock long enough that BullMQ
-			// does not race a second worker onto the same library item mid-completion.
-			// Lock renewal runs every LockDuration/4.
-			LockDuration:    30 * time.Minute,
-			StalledInterval: 10 * time.Minute,
+			// Search jobs complete in seconds (NZBHydra HTTP call + async download
+			// dispatch). A 2-minute lock is more than sufficient and ensures stalled
+			// jobs are detected and re-queued quickly instead of blocking dedup for
+			// 30 minutes. Lock renewal runs every LockDuration/4 = 30s.
+			LockDuration:    2 * time.Minute,
+			StalledInterval: 1 * time.Minute,
 			// Allow one recovery attempt before failing: if the stalled check fires
 			// while the lock is briefly between renewals, the job is moved back to
 			// wait instead of immediately to failed (MaxStalledCount=0 default).

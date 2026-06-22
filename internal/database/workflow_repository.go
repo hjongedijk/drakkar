@@ -637,11 +637,13 @@ func (db *DB) GetQueueRetryTarget(ctx context.Context, queueItemID int64) (Queue
 
 func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLibrarySearchTarget, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
-		select item.library_item_id, item.selected
+		select item.library_item_id, item.selected, coalesce(item.selected_release_id, 0), item.state, item.updated_at
 		from (
 			select distinct on (q.library_item_id)
 				q.library_item_id,
 				(q.selected_release_id is not null and q.state in ($1, $3)) as selected,
+				q.selected_release_id,
+				q.state,
 				q.updated_at,
 				q.created_at,
 				q.id
@@ -659,9 +661,9 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 			    -- in requested. These should be dispatched immediately so the
 			    -- worker can continue fetch/import without waiting for retry pass.
 			    or (q.state = $1 and q.selected_release_id is not null)
-			    -- Stranded selected items: release chosen but BullMQ job stalled before
-			    -- download began. Re-pushing is safe: BullMQ deduplicates by libraryItemID
-			    -- so an active job for this item ignores the duplicate push.
+			    -- Stranded selected items: release chosen but download not yet started.
+			    -- Submitted directly to the downloadDispatcher (bypassing BullMQ) so
+			    -- a stalled BullMQ lock cannot block their progress.
 			    or q.state = $3
 			  )
 			  -- Skip movies that haven't been released yet.
@@ -707,7 +709,7 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 	var out []PendingLibrarySearchTarget
 	for rows.Next() {
 		var item PendingLibrarySearchTarget
-		if err := rows.Scan(&item.LibraryItemID, &item.Selected); err != nil {
+		if err := rows.Scan(&item.LibraryItemID, &item.Selected, &item.SelectedReleaseID, &item.State, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
