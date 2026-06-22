@@ -279,11 +279,8 @@ func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID in
 		return QueueSnapshot{}, err
 	}
 
-	if _, err = tx.ExecContext(ctx, `
-		delete from nzb_documents
-		where selected_release_id = $1`, selectedReleaseID); err != nil {
-		return QueueSnapshot{}, err
-	}
+	// virtual_files.nzb_file_id → nzb_files(id) has no ON DELETE CASCADE, so
+	// virtual_files must be deleted before nzb_documents (which cascades to nzb_files).
 	if _, err = tx.ExecContext(ctx, `
 		delete from virtual_files
 		where selected_release_id = $1`, selectedReleaseID); err != nil {
@@ -291,6 +288,11 @@ func (db *DB) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID in
 	}
 	if _, err = tx.ExecContext(ctx, `
 		delete from archives
+		where selected_release_id = $1`, selectedReleaseID); err != nil {
+		return QueueSnapshot{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		delete from nzb_documents
 		where selected_release_id = $1`, selectedReleaseID); err != nil {
 		return QueueSnapshot{}, err
 	}
