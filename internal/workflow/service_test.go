@@ -284,6 +284,10 @@ func (r *repoStub) MarkSelectedReleaseFetching(ctx context.Context, selectedRele
 	return nil
 }
 
+func (r *repoStub) StoreRawNZBDocument(ctx context.Context, selectedReleaseID int64, fileName string, xml []byte, externalURL string) error {
+	return nil
+}
+
 func (r *repoStub) ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID int64, imported database.ImportedNZB) (database.QueueSnapshot, error) {
 	r.imported = imported
 	// Simulate real import creating virtual files so VirtualFileCount==0 fast-fail doesn't trigger.

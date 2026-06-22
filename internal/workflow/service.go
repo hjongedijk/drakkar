@@ -72,6 +72,7 @@ type Repository interface {
 	RestoreRejectedReleaseCandidates(ctx context.Context, libraryItemID int64) (database.RejectedReleaseRestoreResult, error)
 	SkipReleaseCandidate(ctx context.Context, releaseCandidateID int64) (*database.ReleaseSummary, error)
 	MarkSelectedReleaseFetching(ctx context.Context, selectedReleaseID int64) error
+	StoreRawNZBDocument(ctx context.Context, selectedReleaseID int64, fileName string, xml []byte, externalURL string) error
 	ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID int64, imported database.ImportedNZB) (database.QueueSnapshot, error)
 	SetImportedNZBIndexed(ctx context.Context, queueItemID int64) error
 	FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedReleaseID int64, reason string) (*database.ReleaseSummary, error)
@@ -1637,6 +1638,13 @@ func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID in
 		result, err := s.promoteNextAfterFailureDepth(ctx, current, err.Error(), 0)
 		return result, nil, err
 	}
+	// Persist raw NZB bytes immediately after download so that a crash or restart
+	// between here and ImportSelectedReleaseNZB does not cause a re-download.
+	// NZBDocumentID != nil check at the top of this function will reuse the stored
+	// bytes on the next attempt instead of calling NZBFinder again.
+	if storeErr := s.repo.StoreRawNZBDocument(ctx, current.SelectedReleaseID, fileName, raw, current.ExternalURL); storeErr != nil {
+		s.logger.Warn().Err(storeErr).Int64("srId", current.SelectedReleaseID).Msg("early NZB store failed — will re-download on next attempt if restart occurs")
+	}
 	imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
 	if err != nil {
 		result, err := s.promoteNextAfterFailureDepth(ctx, current, err.Error(), 0)
@@ -1741,6 +1749,9 @@ func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, select
 	fileName, raw, err := s.fetcher.Fetch(ctx, current.ExternalURL)
 	if err != nil {
 		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
+	}
+	if storeErr := s.repo.StoreRawNZBDocument(ctx, current.SelectedReleaseID, fileName, raw, current.ExternalURL); storeErr != nil {
+		s.logger.Warn().Err(storeErr).Int64("srId", current.SelectedReleaseID).Msg("early NZB store failed — will re-download on next attempt if restart occurs")
 	}
 	imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
 	if err != nil {

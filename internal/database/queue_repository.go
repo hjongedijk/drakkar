@@ -507,6 +507,22 @@ func (db *DB) MarkSelectedReleaseFetching(ctx context.Context, selectedReleaseID
 	return err
 }
 
+// StoreRawNZBDocument persists the raw NZB bytes immediately after download,
+// before any preflight or segment indexing. This ensures NZBDocumentID is set
+// even if the app crashes during subsequent processing — preventing a re-download
+// from the indexer on the next attempt (the NZBDocumentID != nil check skips the fetch).
+// ImportSelectedReleaseNZB will later overwrite this row with the full indexed version.
+func (db *DB) StoreRawNZBDocument(ctx context.Context, selectedReleaseID int64, fileName string, xml []byte, externalURL string) error {
+	_, err := db.SQL.ExecContext(ctx, `
+		insert into nzb_documents (selected_release_id, external_url, file_name, xml)
+		select $1, $2, $3, $4
+		where not exists (
+			select 1 from nzb_documents where selected_release_id = $1
+		)`,
+		selectedReleaseID, externalURL, fileName, xml)
+	return err
+}
+
 func (db *DB) SetImportedNZBIndexed(ctx context.Context, queueItemID int64) error {
 	_, err := db.SQL.ExecContext(ctx, `
 		update queue_items
