@@ -2483,6 +2483,16 @@ func (db *DB) ResetLibraryItemState(ctx context.Context, libraryItemID int64) er
 		}
 	}
 
+	// Clear the selected flag on all release candidates so the item re-enters
+	// the search cycle cleanly. Without this, release_candidates.selected=true
+	// lingers after the selected_releases row is deleted, leaving the item in an
+	// orphaned state where it appears to have a selection but none exists.
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE release_candidates SET selected = false WHERE library_item_id = $1`, libraryItemID,
+	); err != nil {
+		return err
+	}
+
 	if _, err = tx.ExecContext(ctx, `
 		UPDATE queue_items
 		SET state = $2, failure_reason = '', selected_release_id = NULL, updated_at = now()
