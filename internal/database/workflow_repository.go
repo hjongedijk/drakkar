@@ -792,12 +792,22 @@ func (db *DB) ListFailedQueueRetryTargets(ctx context.Context, limit int) ([]Fai
 			coalesce(rc.failure_count, 0) as candidate_failure_count
 		from queue_items q
 		join library_items li on li.id = q.library_item_id
+		left join episodes ep on ep.id = li.episode_id
+		left join tv_shows tv on tv.id = ep.tv_show_id
 		left join selected_releases sr on sr.id = q.selected_release_id
 		left join release_candidates rc on rc.id = sr.release_candidate_id
 		where li.available = false
 		  and (
 		    q.state = $1
 		    or (q.state = $2 and q.selected_release_id is not null and q.updated_at < now() - interval '2 minutes')
+		  )
+		  -- Skip TV episodes that haven't aired yet; mirrors ListPendingLibrarySearchTargets.
+		  and (
+		      li.media_type != 'episode'
+		      or ep.id is null
+		      or ep.air_date is null
+		      or ep.air_date <= current_date
+		      or coalesce(tv.monitoring_mode, 'all') = 'future'
 		  )
 		order by
 			-- Prioritise restart/stale interruptions first: they are cheap (no Hydra
