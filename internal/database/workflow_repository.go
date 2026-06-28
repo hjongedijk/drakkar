@@ -2823,7 +2823,7 @@ func (db *DB) ListTVShowTmdbIDsWithSeasons(ctx context.Context) ([]TVShowSeerrIn
 func (db *DB) TouchQueueItemSearched(ctx context.Context, libraryItemID int64) error {
 	_, err := db.SQL.ExecContext(ctx, `
 		UPDATE queue_items SET last_searched_at = now()
-		WHERE library_item_id = $1 AND state NOT IN ('available', 'failed')`,
+		WHERE library_item_id = $1 AND state != 'available'`,
 		libraryItemID)
 	return err
 }
