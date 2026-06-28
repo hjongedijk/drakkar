@@ -385,8 +385,9 @@ func (db *DB) rescaleFileSegments(ctx context.Context, nzbFileID, actualFirstSiz
 // PublishedDirectNzbSegment holds the identifiers needed to validate and reset
 // a published direct_nzb virtual file.
 type PublishedDirectNzbSegment struct {
-	LibraryItemID int64
-	FirstMsgID    string
+	LibraryItemID     int64
+	FirstMsgID        string
+	SelectedReleaseID int64
 }
 
 // ListPublishedDirectNzbSegments returns one entry per library item that has an
@@ -397,10 +398,12 @@ func (db *DB) ListPublishedDirectNzbSegments(ctx context.Context) ([]PublishedDi
 	rows, err := db.SQL.QueryContext(ctx, `
 		SELECT DISTINCT ON (sp.library_item_id)
 		    sp.library_item_id,
-		    nf.message_ids[1]
+		    nf.message_ids[1],
+		    coalesce(qi.selected_release_id, 0)
 		FROM symlink_publications sp
 		JOIN virtual_files vf ON vf.id = sp.virtual_file_id
 		JOIN nzb_files nf ON nf.id = vf.nzb_file_id
+		LEFT JOIN queue_items qi ON qi.library_item_id = sp.library_item_id
 		WHERE vf.reader_kind = 'direct_nzb'
 		  AND nf.message_ids IS NOT NULL
 		  AND array_length(nf.message_ids, 1) > 0
@@ -412,7 +415,7 @@ func (db *DB) ListPublishedDirectNzbSegments(ctx context.Context) ([]PublishedDi
 	var out []PublishedDirectNzbSegment
 	for rows.Next() {
 		var s PublishedDirectNzbSegment
-		if err := rows.Scan(&s.LibraryItemID, &s.FirstMsgID); err != nil {
+		if err := rows.Scan(&s.LibraryItemID, &s.FirstMsgID, &s.SelectedReleaseID); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

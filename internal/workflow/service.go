@@ -495,10 +495,18 @@ func (s *Service) ValidatePublishedArticles(ctx context.Context) (int, error) {
 		if !strings.Contains(msg, "430") && !strings.Contains(msg, "article not found") && !strings.Contains(msg, "article missing") {
 			continue
 		}
-		s.logger.Warn().Int64("libraryItemId", seg.LibraryItemID).Str("msgID", seg.FirstMsgID).Err(checkErr).Msg("article health check: first segment unavailable — resetting library item")
-		if resetErr := s.ResetLibraryItem(ctx, seg.LibraryItemID); resetErr != nil {
-			s.logger.Warn().Int64("libraryItemId", seg.LibraryItemID).Err(resetErr).Msg("article health check: reset failed")
-			continue
+		s.logger.Warn().Int64("libraryItemId", seg.LibraryItemID).Str("msgID", seg.FirstMsgID).Err(checkErr).Msg("article health check: first segment unavailable — blocklisting release")
+		reason := "article health check: " + checkErr.Error()
+		if seg.SelectedReleaseID > 0 {
+			if blockErr := s.FailAndBlocklistRelease(ctx, seg.SelectedReleaseID, reason); blockErr != nil {
+				s.logger.Warn().Int64("libraryItemId", seg.LibraryItemID).Err(blockErr).Msg("article health check: blocklist failed")
+				continue
+			}
+		} else {
+			if resetErr := s.ResetLibraryItem(ctx, seg.LibraryItemID); resetErr != nil {
+				s.logger.Warn().Int64("libraryItemId", seg.LibraryItemID).Err(resetErr).Msg("article health check: reset failed")
+				continue
+			}
 		}
 		reset++
 	}
