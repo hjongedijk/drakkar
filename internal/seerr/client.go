@@ -34,6 +34,7 @@ type Request struct {
 	SeasonNumber  int
 	EpisodeNumber int
 	EpisodeTitle  string
+	Seasons       []int // set for season-level requests (no individual episodes)
 }
 
 func NewClient(cfg config.ServiceConfig) *Client {
@@ -105,6 +106,12 @@ func (c *Client) PendingRequests(ctx context.Context) ([]Request, error) {
 				request.SeasonNumber = item.Episodes[0].SeasonNumber
 				request.EpisodeNumber = item.Episodes[0].EpisodeNumber
 				request.EpisodeTitle = item.Episodes[0].Name
+			} else if len(item.Seasons) > 0 {
+				for _, s := range item.Seasons {
+					if s.SeasonNumber > 0 {
+						request.Seasons = append(request.Seasons, s.SeasonNumber)
+					}
+				}
 			}
 			out = append(out, request)
 		}
@@ -138,6 +145,10 @@ type requestListPayload struct {
 			EpisodeNumber int    `json:"episodeNumber"`
 			Name          string `json:"name"`
 		} `json:"episodes"`
+		Seasons []struct {
+			SeasonNumber int `json:"seasonNumber"`
+			Status       int `json:"status"`
+		} `json:"seasons"`
 	} `json:"results"`
 }
 
@@ -248,8 +259,8 @@ type PartialTVItem struct {
 func (c *Client) PartialTVItems(ctx context.Context) ([]PartialTVItem, error) {
 	const pageSize = 500
 	var out []PartialTVItem
-	for page := 1; ; page++ {
-		payload, err := c.fetchPartialMediaPage(ctx, page, pageSize)
+	for skip := 0; ; skip += pageSize {
+		payload, err := c.fetchPartialMediaPage(ctx, skip, pageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -272,7 +283,7 @@ func (c *Client) PartialTVItems(ctx context.Context) ([]PartialTVItem, error) {
 				PartialSeasons: partial,
 			})
 		}
-		if page >= payload.PageInfo.Pages || len(payload.Results) == 0 {
+		if payload.PageInfo.Results <= skip+pageSize || len(payload.Results) == 0 {
 			break
 		}
 	}
@@ -298,7 +309,7 @@ type partialMediaPayload struct {
 	} `json:"results"`
 }
 
-func (c *Client) fetchPartialMediaPage(ctx context.Context, page, pageSize int) (partialMediaPayload, error) {
+func (c *Client) fetchPartialMediaPage(ctx context.Context, skip, pageSize int) (partialMediaPayload, error) {
 	u, err := url.Parse(c.baseURL + "/api/v1/media")
 	if err != nil {
 		return partialMediaPayload{}, err
@@ -306,7 +317,7 @@ func (c *Client) fetchPartialMediaPage(ctx context.Context, page, pageSize int) 
 	q := u.Query()
 	q.Set("filter", "partial")
 	q.Set("take", strconv.Itoa(pageSize))
-	q.Set("page", strconv.Itoa(page))
+	q.Set("skip", strconv.Itoa(skip))
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)

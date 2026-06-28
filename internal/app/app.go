@@ -20,7 +20,6 @@ import (
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/database"
 	"github.com/hjongedijk/drakkar/internal/dav"
-	"github.com/hjongedijk/drakkar/internal/fuse"
 	"github.com/hjongedijk/drakkar/internal/hydra"
 	"github.com/hjongedijk/drakkar/internal/jellyfin"
 	"github.com/hjongedijk/drakkar/internal/library"
@@ -58,14 +57,13 @@ const (
 	taskHealthCheck            = "health_check"
 	taskNZBHealthCheck         = "nzb_health_check"
 	taskCachePrune             = "cache_prune"
-	taskOrphanedContent        = "orphaned-content"
-	taskBrokenSymlinks         = "broken-media-symlinks"
-	taskOrphanedCompleted      = "orphaned-completed-symlinks"
+	taskLibraryCleanup         = "library-cleanup"
 	taskFillMissingEpisodes    = "fill_missing_episodes"
 	taskSearchUpgrades         = "search_upgrades"
 	taskResetOrphaned          = "reset_orphaned_available"
 	taskSyncPlexDetected       = "sync_plex_detected"
 	taskArticleHealthCheck     = "article_health_check"
+	taskBacklogSearch          = "backlog_search"
 )
 
 const (
@@ -179,11 +177,10 @@ func (s *taskScheduleStatusService) ListTaskSchedules(ctx context.Context) ([]ap
 		{ID: taskNZBHealthCheck, Label: "Deep NZB Article Check", Group: "Maintenance", Interval: "168h", Automated: true, LastRunState: "idle"},
 		{ID: taskArticleHealthCheck, Label: "Article Health Check", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
 		{ID: taskCachePrune, Label: "Prune Block Cache", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
-		{ID: taskOrphanedContent, Label: "Remove Orphaned Content", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
-		{ID: taskBrokenSymlinks, Label: "Remove Broken Media Symlinks", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
-		{ID: taskOrphanedCompleted, Label: "Remove Orphaned History", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
+		{ID: taskLibraryCleanup, Label: "Library Cleanup", Group: "Maintenance", Interval: "6h", Automated: true, LastRunState: "idle"},
 		{ID: taskFillMissingEpisodes, Label: "Fill Missing Episodes", Group: "Indexing", Interval: "6h", Automated: true, LastRunState: "idle"},
 		{ID: taskSearchUpgrades, Label: "Search Quality Upgrades", Group: "Indexing", Interval: "6h", Automated: true, LastRunState: "idle"},
+		{ID: taskBacklogSearch, Label: "Backlog Search", Group: "Indexing", Interval: "30m", Automated: true, LastRunState: "idle"},
 	}
 	for i := range defs {
 		if runAt, ok := lastRuns[defs[i].ID]; ok {
@@ -379,7 +376,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	if strings.TrimSpace(cfg.Metadata.TVDB.APIKey) != "" {
 		workflowSvc.SetTVDBClient(tvdb.NewClient(cfg.Metadata))
 	}
-	publicationSvc := library.NewPublisher(db, rt)
+	publicationSvc := library.NewPublisher(db, rt, cfg.Rclone.RCAddr)
 	maintenanceSvc := &maintenanceOpsService{
 		base:           maintenance.NewService(db, rt),
 		db:             db,
@@ -501,14 +498,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 	workflowSvc.SetQueuePolicyProvider(policySvc)
 	workflowSvc.SetLogger(logger)
 	workflowSvc.SetDefaultProfileNames(cfg.Library.DefaultMovieProfile, cfg.Library.DefaultTvProfile)
-	// Attempt lazy unmount in case a previous process left a stale FUSE socket.
-	_ = fuse.LazyUnmount(rt.FuseMountPath)
-	fuseServer, fuseErr := fuse.Mount(rt.FuseMountPath, rt.StagingNZBPath, rt.NZBUploadLimitBytes, queueSvc)
-	if fuseErr != nil {
-		logger.Warn().Err(fuseErr).Str("path", rt.FuseMountPath).Msg("fuse mount failed — FUSE VFS unavailable, use WebDAV on port 8888 for file access")
-	} else {
-		defer fuseServer.Unmount()
-	}
 	broker := api.NewEventBroker()
 
 	// live metrics collector — reads NNTP pool + scheduler + disk cache at query time
@@ -658,6 +647,23 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 		logger.Info().Int("pending", result.Processed).Int("dispatched", result.Searched).Msg("monitoring: pending dispatch complete")
 	}
+	// runBacklogSearch actively searches all pending library items via Hydra2.
+	// Unlike runPendingDispatch (which only resumes items with a selected release),
+	// this pushes every unresolved item into the BullMQ search workers so old
+	// content that never appears in RSS feeds gets found and downloaded.
+	runBacklogSearch := func() {
+		result, err := workflowSvc.SearchPendingLibrary(ctx)
+		if err != nil {
+			logger.Error().Err(err).Msg("backlog search: error")
+			return
+		}
+		_ = db.TouchMaintenanceCursor(ctx, taskBacklogSearch, time.Now().UTC().Format(time.RFC3339))
+		if result.Searched > 0 {
+			broker.Publish(map[string]any{"kind": "library.backlog_search_background", "searched": result.Searched})
+		}
+		logger.Info().Int("processed", result.Processed).Int("searched", result.Searched).Msg("backlog search: complete")
+	}
+
 	shouldSkipNonCriticalMaintenance := func(taskName string) (bool, string) {
 		backlog, err := db.CountActiveSearchBacklog(ctx)
 		if err == nil && backlog >= nonCriticalBacklogThreshold {
@@ -710,29 +716,38 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		var checked, healthy int
 		for _, e := range entries {
 			isOK := database.CheckSymlinkHealth(e.LibraryPath, e.TargetPath)
-			_ = db.RecordHealthStatus(ctx, e.ID, isOK)
+			_ = db.RecordHealthCheck(ctx, e.ID, isOK)
 			checked++
 			if isOK {
 				healthy++
 			}
 		}
-		deepResult := maintenance.Result{TaskName: "nzb-health-check"}
-		backlog, backlogErr := db.CountActiveSearchBacklog(ctx)
-		switch {
-		case backlogErr != nil:
-			logger.Warn().Err(backlogErr).Msg("monitoring: backlog probe failed; running deep health check")
-			deepResult, err = runNZBHealthCheckBatch(ctx, db, workflowSvc, publicationSvc, logger, backgroundDeepHealthBatchSize, false)
-			if err != nil {
-				logger.Error().Err(err).Msg("monitoring: background deep health check error")
-			}
-		case backlog >= backgroundDeepHealthSkipDepth:
-			logger.Info().Int("backlog", backlog).Msg("monitoring: skipping background deep health check while queue backlog is high")
-		default:
-			deepResult, err = runNZBHealthCheckBatch(ctx, db, workflowSvc, publicationSvc, logger, backgroundDeepHealthBatchSize, false)
-			if err != nil {
-				logger.Error().Err(err).Msg("monitoring: background deep health check error")
+		// Repair pass: re-publish any entries still marked broken after the scan above.
+		var repaired int
+		if publicationSvc != nil {
+			broken, brokenErr := db.ListBrokenSymlinkEntries(ctx)
+			if brokenErr == nil {
+				for _, e := range broken {
+					if ctx.Err() != nil {
+						break
+					}
+					if err := publicationSvc.RepublishLibraryItem(ctx, e.LibraryItemID); err != nil {
+						logger.Warn().Err(err).Int64("libraryItemId", e.LibraryItemID).Msg("health check: symlink repair failed")
+						continue
+					}
+					isOK := database.CheckSymlinkHealth(e.LibraryPath, e.TargetPath)
+					_ = db.RecordHealthCheck(ctx, e.ID, isOK)
+					if isOK {
+						repaired++
+					}
+				}
 			}
 		}
+		deepResult, err := runNZBHealthCheckBatch(ctx, db, workflowSvc, publicationSvc, logger, backgroundDeepHealthBatchSize, false)
+		if err != nil {
+			logger.Error().Err(err).Msg("monitoring: background deep health check error")
+		}
+		calibrated, _ := db.CalibrateNZBOffsetsBatch(ctx, backgroundDeepHealthBatchSize)
 		_ = db.TouchMaintenanceCursor(ctx, taskHealthCheck, time.Now().UTC().Format(time.RFC3339))
 		broker.Publish(map[string]any{
 			"kind":          "health.check_background",
@@ -746,10 +761,12 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		logger.Info().
 			Int("checked", checked).
 			Int("healthy", healthy).
+			Int("symlinksRepaired", repaired).
 			Int("deepChecked", deepResult.ScannedRows).
 			Int("repaired", deepResult.RepairedItems).
 			Int("degraded", deepResult.DegradedItems).
 			Int("reset", deepResult.ResetItems).
+			Int("calibrated", calibrated).
 			Msg("monitoring: health check complete")
 	}
 
@@ -871,25 +888,13 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		}
 	})
 	startRecurringWithStartupDelay(taskCachePrune, 6*time.Hour, 8*time.Minute, runCachePrune)
-	startRecurringWithStartupDelay(taskOrphanedContent, 6*time.Hour, 10*time.Minute, func() {
-		if skip, reason := shouldSkipNonCriticalMaintenance(taskOrphanedContent); skip {
-			logger.Info().Str("task", taskOrphanedContent).Str("reason", reason).Msg("scheduler: skipping non-critical task")
+	startRecurringWithStartupDelay(taskLibraryCleanup, 6*time.Hour, 10*time.Minute, func() {
+		if skip, reason := shouldSkipNonCriticalMaintenance(taskLibraryCleanup); skip {
+			logger.Info().Str("task", taskLibraryCleanup).Str("reason", reason).Msg("scheduler: skipping non-critical task")
 			return
 		}
 		_, _ = maintenanceSvc.RemoveOrphanedContent(ctx)
-	})
-	startRecurringWithStartupDelay(taskBrokenSymlinks, 6*time.Hour, 12*time.Minute, func() {
-		if skip, reason := shouldSkipNonCriticalMaintenance(taskBrokenSymlinks); skip {
-			logger.Info().Str("task", taskBrokenSymlinks).Str("reason", reason).Msg("scheduler: skipping non-critical task")
-			return
-		}
 		_, _ = maintenanceSvc.RemoveBrokenMediaSymlinks(ctx)
-	})
-	startRecurringWithStartupDelay(taskOrphanedCompleted, 6*time.Hour, 14*time.Minute, func() {
-		if skip, reason := shouldSkipNonCriticalMaintenance(taskOrphanedCompleted); skip {
-			logger.Info().Str("task", taskOrphanedCompleted).Str("reason", reason).Msg("scheduler: skipping non-critical task")
-			return
-		}
 		_, _ = maintenanceSvc.RemoveOrphanedCompletedSymlinks(ctx)
 	})
 	startRecurring(taskFillMissingEpisodes, 6*time.Hour, false, func() {
@@ -904,6 +909,7 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			logger.Info().Int("checked", res.Checked).Int("upgraded", res.Upgraded).Int("failed", res.Failed).Msg("upgrade search complete")
 		}
 	})
+	startRecurring(taskBacklogSearch, 30*time.Minute, true, runBacklogSearch)
 
 	webdavServer := &http.Server{
 		Addr:              rt.WebDAVAddress,
@@ -929,11 +935,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 			logger.Error().Err(err).Msg("rebuild publications failed")
 		}
 	}()
-	go func() {
-		if err := db.CalibrateAllNZBOffsets(ctx); err != nil {
-			logger.Error().Err(err).Msg("calibrate nzb offsets failed")
-		}
-	}()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -941,9 +942,6 @@ func Run(ctx context.Context, logger zerolog.Logger) error {
 		_ = webdavServer.Shutdown(shutdownCtx)
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return err
-		}
-		if fuseErr == nil {
-			return fuseServer.Unmount()
 		}
 		return nil
 	case err := <-errCh:

@@ -392,6 +392,15 @@ func (r *repoStub) ListReleaseBlockRules(_ context.Context) ([]database.ReleaseB
 func (r *repoStub) LoadIndexerPolicyMap(_ context.Context) (map[string]int, error) {
 	return nil, nil
 }
+func (r *repoStub) ListPublishedDirectNzbSegments(_ context.Context) ([]database.PublishedDirectNzbSegment, error) {
+	return nil, nil
+}
+func (r *repoStub) TouchQueueItemSearched(_ context.Context, _ int64) error {
+	return nil
+}
+func (r *repoStub) CalibrateNZBOffsets(_ context.Context, _ int64) error {
+	return nil
+}
 
 type seerrStub struct {
 	requests []seerr.Request
@@ -886,12 +895,14 @@ func TestSearchLibraryPenalizesPreviouslyFailedCandidateAcrossRefresh(t *testing
 	if repo.searchApplied[1].FailureCount != 2 || repo.searchApplied[1].LastFailureReason != "context deadline exceeded" {
 		t.Fatalf("expected history carried forward, got %+v", repo.searchApplied[1])
 	}
-	if repo.searchApplied[1].Rejected {
-		t.Fatalf("expected previously failed candidate to be penalized, not auto-rejected: %+v", repo.searchApplied[1])
+	if !repo.searchApplied[1].Rejected {
+		t.Fatalf("expected previously failed candidate to be durably rejected after 2 hard failures: %+v", repo.searchApplied[1])
 	}
 }
 
-func TestSearchLibraryAllowsSinglePreviouslyFailedCandidateAsFallback(t *testing.T) {
+func TestSearchLibraryRejectsSinglePreviouslyFailedHardCandidate(t *testing.T) {
+	// Hard failure (e.g. context deadline) on first attempt → durably rejected (threshold=1).
+	// No selectable candidates remain so no release is selected.
 	repo := &repoStub{
 		searchInput: database.LibrarySearchInput{
 			LibraryItemID: 42,
@@ -919,14 +930,8 @@ func TestSearchLibraryAllowsSinglePreviouslyFailedCandidateAsFallback(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SelectedReleaseID == nil {
-		t.Fatalf("expected fallback candidate to remain selectable, got %+v", result)
-	}
-	if len(repo.searchApplied) != 1 {
-		t.Fatalf("unexpected candidates %+v", repo.searchApplied)
-	}
-	if repo.searchApplied[0].Rejected {
-		t.Fatalf("expected single previously failed candidate not to be auto-rejected: %+v", repo.searchApplied[0])
+	if result.SelectedReleaseID != nil {
+		t.Fatalf("expected no selection when only candidate has a hard failure, got %+v", result)
 	}
 }
 
@@ -989,7 +994,7 @@ func TestSearchLibraryAllowsRepeatedArchiveFailuresLonger(t *testing.T) {
 		history: map[string]database.CandidateHistory{
 			"http://example/archive": {
 				ExternalURL:       "http://example/archive",
-				FailureCount:      7,
+				FailureCount:      2,
 				LastFailureReason: "archive_headers_invalid",
 			},
 		},
@@ -1007,7 +1012,7 @@ func TestSearchLibraryAllowsRepeatedArchiveFailuresLonger(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.SelectedReleaseID == nil {
-		t.Fatalf("expected archive retry candidate to remain eligible at 7 failures, got %+v", result)
+		t.Fatalf("expected archive retry candidate to remain eligible at 2 failures (effective 1, threshold 3), got %+v", result)
 	}
 	if len(repo.searchApplied) != 1 || repo.searchApplied[0].Rejected {
 		t.Fatalf("expected archive retry candidate not to be durably rejected yet, got %+v", repo.searchApplied)

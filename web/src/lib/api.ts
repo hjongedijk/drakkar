@@ -169,8 +169,8 @@ export const api = {
     request<{ releaseCandidateId: number; action: string; selectedReleaseId?: number }>(`/api/releases/${releaseCandidateID}/restore`, { method: 'POST' }),
   skipRelease: (releaseCandidateID: number) =>
     request<{ releaseCandidateId: number; action: string; selectedReleaseId?: number }>(`/api/releases/${releaseCandidateID}/skip`, { method: 'POST' }),
-  maintenance: (task: 'orphaned-content' | 'broken-media-symlinks' | 'orphaned-completed-symlinks' | 'nzb-health-check') =>
-    request<MaintenanceResult>(`/api/maintenance/${task}`, { method: 'POST' }),
+  nzbHealthCheck: () =>
+    request<MaintenanceResult>('/api/maintenance/nzb-health-check', { method: 'POST' }),
   pruneCache: () => request<{ root: string; filesBefore: number; filesAfter: number; bytesBefore: number; bytesAfter: number; deletedFiles: number; deletedBytes: number; limitBytes: number }>('/api/cache/prune', { method: 'POST' }),
   clearBlocklist: (id: number) => request<{ status: string; blocklistItemId: number }>(`/api/blocklist/${id}`, { method: 'DELETE' }),
   clearAllBlocklist: () => request<{ cleared: number }>('/api/blocklist', { method: 'DELETE' }),

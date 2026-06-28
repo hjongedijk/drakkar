@@ -232,18 +232,6 @@ func (p *publicationStub) RepublishPendingLibrary(ctx context.Context) (library.
 	return p.pending, nil
 }
 
-func (maintenanceStub) RemoveOrphanedContent(ctx context.Context) (maintenance.Result, error) {
-	return maintenance.Result{TaskName: "orphaned-content", DeletedFiles: 1}, nil
-}
-
-func (maintenanceStub) RemoveBrokenMediaSymlinks(ctx context.Context) (maintenance.Result, error) {
-	return maintenance.Result{TaskName: "broken-media-symlinks", DeletedRows: 1}, nil
-}
-
-func (maintenanceStub) RemoveOrphanedCompletedSymlinks(ctx context.Context) (maintenance.Result, error) {
-	return maintenance.Result{TaskName: "orphaned-completed-symlinks", DeletedRows: 1}, nil
-}
-
 func (maintenanceStub) DeepNZBHealthCheck(ctx context.Context) (maintenance.Result, error) {
 	return maintenance.Result{TaskName: "nzb-health-check", ScannedRows: 4, ResetItems: 2}, nil
 }
@@ -777,13 +765,6 @@ func TestWorkflowEndpoints(t *testing.T) {
 	router.ServeHTTP(republishPendingRec, republishPendingReq)
 	if republishPendingRec.Code != http.StatusAccepted || !strings.Contains(republishPendingRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected bulk republish response %d %s", republishPendingRec.Code, republishPendingRec.Body.String())
-	}
-
-	maintReq := httptest.NewRequest(http.MethodPost, "/api/maintenance/orphaned-content", nil)
-	maintRec := httptest.NewRecorder()
-	router.ServeHTTP(maintRec, maintReq)
-	if maintRec.Code != http.StatusAccepted || !strings.Contains(maintRec.Body.String(), `"deletedFiles":1`) {
-		t.Fatalf("unexpected maintenance response %d %s", maintRec.Code, maintRec.Body.String())
 	}
 
 	cacheReq := httptest.NewRequest(http.MethodPost, "/api/cache/prune", nil)

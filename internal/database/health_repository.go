@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -30,11 +31,12 @@ type DeepHealthCandidate struct {
 }
 
 type HealthSummary struct {
-	Total             int `json:"total"`
-	Checked           int `json:"checked"`
-	Healthy           int `json:"healthy"`
-	NeverChecked      int `json:"neverChecked"`
-	ConsistencyIssues int `json:"consistencyIssues"`
+	Total                int `json:"total"`
+	Checked              int `json:"checked"`
+	Healthy              int `json:"healthy"`
+	NeverChecked         int `json:"neverChecked"`
+	ConsistencyIssues    int `json:"consistencyIssues"`
+	UncalibratedNZBFiles int `json:"uncalibratedNZBFiles"`
 }
 
 type ConsistencyIssue struct {
@@ -48,6 +50,29 @@ type MaintenanceCursorEntry struct {
 	TaskName  string    `json:"taskName"`
 	Cursor    string    `json:"cursor"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// ListBrokenSymlinkEntries returns all publications where health_ok = false.
+func (db *DB) ListBrokenSymlinkEntries(ctx context.Context) ([]HealthEntry, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		select id, library_item_id, library_path, target_path, created_at, last_checked_at, health_ok
+		from symlink_publications
+		where health_ok = false
+		order by last_checked_at asc nulls first, created_at asc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HealthEntry
+	for rows.Next() {
+		var e HealthEntry
+		if err := rows.Scan(&e.ID, &e.LibraryItemID, &e.LibraryPath, &e.TargetPath,
+			&e.CreatedAt, &e.LastCheckedAt, &e.HealthOK); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) ListHealthEntries(ctx context.Context) ([]HealthEntry, error) {
@@ -69,6 +94,57 @@ func (db *DB) ListHealthEntries(ctx context.Context) ([]HealthEntry, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+type HealthEntriesPage struct {
+	Items []HealthEntry `json:"items"`
+	Total int           `json:"total"`
+}
+
+// ListHealthEntriesPage returns a paginated, filterable page of health entries.
+// filter: "all" | "broken" | "unchecked"
+func (db *DB) ListHealthEntriesPage(ctx context.Context, filter string, limit, offset int) (HealthEntriesPage, error) {
+	var where string
+	switch filter {
+	case "broken":
+		where = "where health_ok = false"
+	case "unchecked":
+		where = "where last_checked_at is null"
+	default:
+		where = ""
+	}
+	// Broken and unchecked entries float to top; within each group order by path.
+	query := `
+		select id, library_item_id, library_path, target_path, created_at, last_checked_at, health_ok
+		from symlink_publications
+		` + where + `
+		order by
+			case when health_ok is false then 0 when health_ok is null then 1 else 2 end,
+			library_path asc
+		limit $1 offset $2`
+	countQuery := `select count(*) from symlink_publications ` + where
+	var total int
+	if err := db.SQL.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+		return HealthEntriesPage{}, err
+	}
+	rows, err := db.SQL.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return HealthEntriesPage{}, err
+	}
+	defer rows.Close()
+	var items []HealthEntry
+	for rows.Next() {
+		var e HealthEntry
+		if err := rows.Scan(&e.ID, &e.LibraryItemID, &e.LibraryPath, &e.TargetPath,
+			&e.CreatedAt, &e.LastCheckedAt, &e.HealthOK); err != nil {
+			return HealthEntriesPage{}, err
+		}
+		items = append(items, e)
+	}
+	if items == nil {
+		items = []HealthEntry{}
+	}
+	return HealthEntriesPage{Items: items, Total: total}, rows.Err()
 }
 
 func (db *DB) HealthSummary(ctx context.Context) (HealthSummary, error) {
@@ -94,6 +170,8 @@ func (db *DB) HealthSummary(ctx context.Context) (HealthSummary, error) {
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
 		  )`).Scan(&s.ConsistencyIssues)
+	_ = db.SQL.QueryRowContext(ctx, `
+		select count(*) from nzb_files where calibrated_at is null`).Scan(&s.UncalibratedNZBFiles)
 	return s, nil
 }
 
@@ -236,11 +314,18 @@ func (db *DB) MarkLibraryItemDegraded(ctx context.Context, libraryItemID int64, 
 	return err
 }
 
-// CheckSymlinkHealth verifies the host-side symlink exists and points to the expected target.
+// CheckSymlinkHealth verifies the host-side symlink exists and points to a valid VFS content path.
+// It accepts any destination under the VFS /content/ tree — not just the exact stored target —
+// because season-pack episodes share a library_path and the symlink may have been updated by a
+// later publish to a different release while older DB records still reference the original target.
 func CheckSymlinkHealth(libraryPath, targetPath string) bool {
 	dest, err := os.Readlink(libraryPath)
 	if err != nil {
 		return false
 	}
-	return dest == targetPath
+	if dest == targetPath {
+		return true
+	}
+	// Accept any symlink that resolves into the VFS content tree.
+	return strings.Contains(dest, "/content/releases/")
 }

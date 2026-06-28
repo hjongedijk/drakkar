@@ -85,7 +85,7 @@ func TestLoadAppliesIndexerWorkerDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Indexer.BackgroundSearchWorkers != 3 {
-		t.Fatalf("expected default backgroundSearchWorkers=3, got %d", cfg.Indexer.BackgroundSearchWorkers)
+	if cfg.Indexer.BackgroundSearchWorkers != 10 {
+		t.Fatalf("expected default backgroundSearchWorkers=10, got %d", cfg.Indexer.BackgroundSearchWorkers)
 	}
 }

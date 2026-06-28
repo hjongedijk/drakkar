@@ -470,6 +470,7 @@ type PendingLibrarySearchTarget struct {
 	LibraryItemID     int64      `json:"libraryItemId"`
 	MediaType         string     `json:"mediaType"`
 	TVShowID          int64      `json:"tvShowId"`
+	SeasonNumber      int        `json:"seasonNumber"`
 	Selected          bool       `json:"selected"`
 	SelectedReleaseID int64      `json:"selectedReleaseId"` // 0 if none
 	ExternalURL       string     `json:"externalUrl,omitempty"`

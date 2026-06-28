@@ -25,7 +25,7 @@ var ErrRateLimited = errors.New("nzbhydra2 rate limited")
 
 const (
 	searchPageSize = 100 // results per page — matches Radarr/Sonarr PageSize
-	searchMaxPages = 10  // max pages per request → 1,000 results cap
+	searchMaxPages = 30  // max pages per request → 3,000 results cap (matches Radarr/Sonarr)
 )
 
 var (
@@ -50,6 +50,12 @@ type Client struct {
 	httpClient *http.Client
 
 	searchInterval time.Duration // 0 = no throttle (Sonarr/Radarr behaviour)
+
+	// searchSem limits concurrent in-flight NZBHydra2 HTTP requests.
+	// NZBHydra2 applies per-indexer load limiting; hammering it with many
+	// concurrent searches exhausts daily API quotas. 3 concurrent matches
+	// typical Radarr+Sonarr combined load on a shared NZBHydra2 instance.
+	searchSem chan struct{}
 
 	rateMu        sync.Mutex
 	lastCall      time.Time
@@ -103,6 +109,9 @@ func NewClient(cfg config.ServiceConfig) *Client {
 	if feedMaxResults <= 0 {
 		feedMaxResults = 1200
 	}
+	// 3 concurrent searches matches typical Radarr+Sonarr combined load on
+	// a shared NZBHydra2 instance and respects per-indexer load limiting.
+	const maxConcurrentSearches = 3
 	return &Client{
 		baseURL: strings.TrimRight(cfg.URL, "/"),
 		apiKey:  cfg.APIKey,
@@ -110,6 +119,7 @@ func NewClient(cfg config.ServiceConfig) *Client {
 			Timeout: 30 * time.Second,
 		},
 		searchInterval: defaultSearchInterval,
+		searchSem:      make(chan struct{}, maxConcurrentSearches),
 		searchCacheTTL: searchCacheTTL,
 		feedCacheTTL:   feedCacheTTL,
 		feedMaxResults: feedMaxResults,
@@ -255,6 +265,15 @@ func (c *Client) Search(ctx context.Context, request SearchRequest) ([]SearchRes
 	if c.apiKey != "" {
 		q.Set("apikey", c.apiKey)
 	}
+
+	// Acquire concurrency slot — limits simultaneous in-flight NZBHydra2
+	// requests to maxConcurrentSearches regardless of worker count.
+	select {
+	case c.searchSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-c.searchSem }()
 
 	var allResults []SearchResult
 	for page := 0; page < searchMaxPages; page++ {

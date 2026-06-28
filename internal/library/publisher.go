@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -12,7 +11,7 @@ import (
 	"github.com/hjongedijk/drakkar/internal/config"
 	"github.com/hjongedijk/drakkar/internal/database"
 	"github.com/hjongedijk/drakkar/internal/metrics"
-	"github.com/hjongedijk/drakkar/internal/stream"
+	"github.com/hjongedijk/drakkar/internal/rclone"
 	"github.com/hjongedijk/drakkar/internal/symlink"
 )
 
@@ -31,13 +30,13 @@ type Repository interface {
 	FindSeasonPackMatches(ctx context.Context, selectedReleaseID, triggeringLibraryItemID int64) ([]database.SeasonPackEpisodeMatch, error)
 	FulfillEpisodeLibraryItem(ctx context.Context, libraryItemID, sourceSelectedReleaseID, virtualFileID int64) error
 	CreateSeasonPackEpisodeItems(ctx context.Context, selectedReleaseID, triggeringLibraryItemID int64) error
-	OpenVirtualMediaFile(ctx context.Context, virtualFileID int64) (stream.VirtualMediaFile, error)
 }
 
 type Publisher struct {
 	repo            Repository
-	syml            *symlink.Publisher
 	runtime         config.Runtime
+	syml            *symlink.Publisher
+	rclone          *rclone.Client
 	postPublishHook func(context.Context, int64) error
 }
 
@@ -49,11 +48,12 @@ type BulkRepublishResult struct {
 	FailedLibrary    []int64 `json:"failedLibrary,omitempty"`
 }
 
-func NewPublisher(repo Repository, runtime config.Runtime) *Publisher {
+func NewPublisher(repo Repository, runtime config.Runtime, rcloneRCAddr string) *Publisher {
 	return &Publisher{
 		repo:    repo,
-		syml:    symlink.NewPublisher(),
 		runtime: runtime,
+		syml:    symlink.NewPublisher(),
+		rclone:  rclone.NewClient(rcloneRCAddr),
 	}
 }
 
@@ -71,14 +71,6 @@ func (p *Publisher) publishSelectedRelease(ctx context.Context, selectedReleaseI
 	}
 	if len(files) == 0 {
 		return ErrNoVirtualFiles
-	}
-	// Only validate media headers on initial publish. Republishes just recreate
-	// the missing symlink — re-checking NNTP availability is unnecessary and
-	// fails for older content that has aged off the provider.
-	if isNew {
-		if err := p.validateReleaseMedia(ctx, files); err != nil {
-			return err
-		}
 	}
 	libraryItemIDs := make(map[int64]struct{})
 	for _, file := range files {
@@ -107,6 +99,7 @@ func (p *Publisher) publishSelectedRelease(ctx context.Context, selectedReleaseI
 			if err := p.repo.UpsertSymlinkPublication(ctx, file.LibraryItemID, file.VirtualFileID, libraryPath, target); err != nil {
 				return err
 			}
+			_ = p.rclone.RefreshPath(ctx, filepath.Dir(libraryPath))
 		}
 		libraryItemIDs[file.LibraryItemID] = struct{}{}
 	}
@@ -143,105 +136,6 @@ func (p *Publisher) publishSelectedRelease(ctx context.Context, selectedReleaseI
 		}
 	}
 	return nil
-}
-
-func (p *Publisher) validateReleaseMedia(ctx context.Context, files []database.ReleaseVirtualFile) error {
-	for _, file := range files {
-		if !isPublishableMediaType(file.MediaType) {
-			continue
-		}
-		vf, err := p.repo.OpenVirtualMediaFile(ctx, file.VirtualFileID)
-		if err != nil {
-			return fmt.Errorf("%w: open virtual file %d: %v", ErrInvalidMediaPayload, file.VirtualFileID, err)
-		}
-		if err := validateMediaHeader(ctx, vf, file.FileName); err != nil {
-			return fmt.Errorf("%w: virtual file %d %s: %v", ErrInvalidMediaPayload, file.VirtualFileID, file.FileName, err)
-		}
-	}
-	return nil
-}
-
-func isPublishableMediaType(mediaType string) bool {
-	switch strings.ToLower(strings.TrimSpace(mediaType)) {
-	case "movie", "episode", "tv":
-		return true
-	default:
-		return false
-	}
-}
-
-func validateMediaHeader(ctx context.Context, vf stream.VirtualMediaFile, fileName string) error {
-	buf := make([]byte, 4096)
-	n, err := vf.ReadAt(ctx, buf, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if n <= 0 {
-		return errors.New("file returned no readable bytes")
-	}
-	buf = buf[:n]
-	if isAllZero(buf) {
-		return errors.New("file header is all zero bytes")
-	}
-	if !matchesKnownContainer(fileName, buf) {
-		return errors.New("file header does not match expected media container")
-	}
-	return nil
-}
-
-func isAllZero(buf []byte) bool {
-	for _, b := range buf {
-		if b != 0 {
-			return false
-		}
-	}
-	return len(buf) > 0
-}
-
-func matchesKnownContainer(fileName string, buf []byte) bool {
-	ext := strings.ToLower(filepath.Ext(fileName))
-	switch ext {
-	case ".mkv", ".webm":
-		return hasPrefix(buf, 0x1a, 0x45, 0xdf, 0xa3)
-	case ".mp4", ".m4v", ".mov":
-		return containsFTYP(buf)
-	case ".avi":
-		return len(buf) >= 12 && string(buf[0:4]) == "RIFF" && string(buf[8:12]) == "AVI "
-	case ".ts", ".m2ts":
-		return len(buf) >= 188 && buf[0] == 0x47
-	default:
-		// Unknown extension: allow if it looks like one of our common containers
-		// or at least has non-zero readable data.
-		return hasPrefix(buf, 0x1a, 0x45, 0xdf, 0xa3) ||
-			containsFTYP(buf) ||
-			(len(buf) >= 12 && string(buf[0:4]) == "RIFF") ||
-			(len(buf) >= 188 && buf[0] == 0x47)
-	}
-}
-
-func hasPrefix(buf []byte, want ...byte) bool {
-	if len(buf) < len(want) {
-		return false
-	}
-	for i := range want {
-		if buf[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func containsFTYP(buf []byte) bool {
-	limit := len(buf) - 8
-	if limit < 0 {
-		return false
-	}
-	for i := 0; i <= limit; i++ {
-		if string(buf[i:i+4]) == "ftyp" {
-			return true
-		}
-	}
-	return false
 }
 
 // PublishSelectedRelease publishes a new release (creates per-episode items for season packs).
@@ -320,7 +214,11 @@ func (p *Publisher) republishEpisodeFromSourceRelease(ctx context.Context, libra
 		if err := p.syml.Publish(libraryPath, target); err != nil {
 			return err
 		}
-		return p.repo.UpsertSymlinkPublication(ctx, libraryItemID, f.VirtualFileID, libraryPath, target)
+		if err := p.repo.UpsertSymlinkPublication(ctx, libraryItemID, f.VirtualFileID, libraryPath, target); err != nil {
+			return err
+		}
+		_ = p.rclone.RefreshPath(ctx, filepath.Dir(libraryPath))
+		return nil
 	}
 	return nil
 }
@@ -404,7 +302,9 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 		libraryPath := p.libraryPathFor(enriched)
 		if libraryPath != "" {
 			if symlinkErr := p.syml.Publish(libraryPath, target); symlinkErr == nil {
-				_ = p.repo.UpsertSymlinkPublication(ctx, m.LibraryItemID, m.VirtualFileID, libraryPath, target)
+				if upsertErr := p.repo.UpsertSymlinkPublication(ctx, m.LibraryItemID, m.VirtualFileID, libraryPath, target); upsertErr == nil {
+					_ = p.rclone.RefreshPath(ctx, filepath.Dir(libraryPath))
+				}
 			}
 		}
 		_ = p.repo.FulfillEpisodeLibraryItem(ctx, m.LibraryItemID, selectedReleaseID, m.VirtualFileID)

@@ -125,7 +125,7 @@ func TestPublishSelectedReleaseUnknownMediaType(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.PublishSelectedRelease(context.Background(), 77); err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestPublishSelectedReleaseMoviePath(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.PublishSelectedRelease(context.Background(), 77); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestPublishSelectedReleaseEpisodePath(t *testing.T) {
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.TVLibraryPath = filepath.Join(root, "tv")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.PublishSelectedRelease(context.Background(), 88); err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestPublishSelectedReleaseWholeShowPackPublishesEpisodeSymlink(t *testing.T
 	rt := config.DefaultRuntime()
 	rt.TVLibraryPath = filepath.Join(root, "tv")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.PublishSelectedRelease(context.Background(), 99); err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestRebuildPublications(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.RebuildPublications(context.Background()); err != nil {
 		t.Fatal(err)
@@ -332,7 +332,7 @@ func TestRepublishLibraryItem(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	if err := publisher.RepublishLibraryItem(context.Background(), 22); err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestRepublishPendingLibrary(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	result, err := publisher.RepublishPendingLibrary(context.Background())
 	if err != nil {
@@ -407,7 +407,7 @@ func TestRestartReconstructionIdempotent(t *testing.T) {
 	want := filepath.Join(rt.FuseMountPath, "content", "releases/77/Dune (2021).mkv")
 
 	// First publisher lifetime: initial publication.
-	p1 := NewPublisher(repo, rt)
+	p1 := NewPublisher(repo, rt, "")
 	if err := p1.RebuildPublications(context.Background()); err != nil {
 		t.Fatalf("first rebuild failed: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestRestartReconstructionIdempotent(t *testing.T) {
 
 	// Second publisher lifetime: simulates a restart with the same persisted state.
 	// Must overwrite the existing symlink atomically without error.
-	p2 := NewPublisher(repo, rt)
+	p2 := NewPublisher(repo, rt, "")
 	if err := p2.RebuildPublications(context.Background()); err != nil {
 		t.Fatalf("second rebuild (restart) failed: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestPublishSelectedReleaseFailsWithoutVirtualFiles(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	err := publisher.PublishSelectedRelease(context.Background(), 77)
 	if !errors.Is(err, ErrNoVirtualFiles) {
@@ -475,7 +475,7 @@ func TestPublishSelectedReleaseRunsPostPublishHook(t *testing.T) {
 	rt := config.DefaultRuntime()
 	rt.MovieLibraryPath = filepath.Join(root, "movies")
 	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
+	publisher := NewPublisher(repo, rt, "")
 
 	var hooked int64
 	publisher.SetPostPublishHook(func(ctx context.Context, libraryItemID int64) error {
@@ -491,32 +491,3 @@ func TestPublishSelectedReleaseRunsPostPublishHook(t *testing.T) {
 	}
 }
 
-func TestPublishSelectedReleaseRejectsInvalidMediaPayload(t *testing.T) {
-	root := t.TempDir()
-	repo := &repoStub{
-		files: []database.ReleaseVirtualFile{{
-			VirtualFileID:     91,
-			SelectedReleaseID: 77,
-			LibraryItemID:     22,
-			MediaType:         "movie",
-			Path:              "releases/77/bad.mkv",
-			FileName:          "bad.mkv",
-			MovieTitle:        "Bad",
-			MovieYear:         2021,
-			MovieTMDBID:       1,
-		}},
-		virtualData: map[int64][]byte{91: bytes.Repeat([]byte{0x00}, 64)},
-	}
-	rt := config.DefaultRuntime()
-	rt.MovieLibraryPath = filepath.Join(root, "movies")
-	rt.FuseMountPath = filepath.Join(root, "vfs")
-	publisher := NewPublisher(repo, rt)
-
-	err := publisher.PublishSelectedRelease(context.Background(), 77)
-	if !errors.Is(err, ErrInvalidMediaPayload) {
-		t.Fatalf("expected ErrInvalidMediaPayload, got %v", err)
-	}
-	if repo.available != 0 {
-		t.Fatalf("release should not be marked available, got %d", repo.available)
-	}
-}

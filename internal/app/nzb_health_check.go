@@ -74,7 +74,7 @@ func runNZBHealthCheckBatch(ctx context.Context, db *database.DB, workflowSvc *w
 		}
 		result.ScannedRows++
 		symlinkOK := database.CheckSymlinkHealth(c.LibraryPath, c.TargetPath)
-		_ = db.RecordHealthStatus(ctx, c.PublicationID, symlinkOK)
+		_ = db.RecordHealthCheck(ctx, c.PublicationID, symlinkOK)
 		if !symlinkOK {
 			if publicationSvc != nil {
 				logger.Warn().
@@ -85,7 +85,7 @@ func runNZBHealthCheckBatch(ctx context.Context, db *database.DB, workflowSvc *w
 					logger.Error().Err(err).Int64("libraryItemId", c.LibraryItemID).Msg("health check: republish failed")
 				} else {
 					symlinkOK = database.CheckSymlinkHealth(c.LibraryPath, c.TargetPath)
-					_ = db.RecordHealthStatus(ctx, c.PublicationID, symlinkOK)
+					_ = db.RecordHealthCheck(ctx, c.PublicationID, symlinkOK)
 					if symlinkOK {
 						if _, exists := repairedSeen[c.LibraryItemID]; !exists {
 							repairedSeen[c.LibraryItemID] = struct{}{}

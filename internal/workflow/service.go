@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,7 @@ type Repository interface {
 	MarkSelectedReleaseFetching(ctx context.Context, selectedReleaseID int64) error
 	StoreRawNZBDocument(ctx context.Context, selectedReleaseID int64, fileName string, xml []byte, externalURL string) error
 	ImportSelectedReleaseNZB(ctx context.Context, selectedReleaseID int64, imported database.ImportedNZB) (database.QueueSnapshot, error)
+	CalibrateNZBOffsets(ctx context.Context, nzbDocumentID int64) error
 	SetImportedNZBIndexed(ctx context.Context, queueItemID int64) error
 	FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedReleaseID int64, reason string) (*database.ReleaseSummary, error)
 	ShouldAttemptSeasonPack(ctx context.Context, tvShowID int64, season int) (bool, error)
@@ -95,6 +97,7 @@ type Repository interface {
 	ListMovieTmdbIDs(ctx context.Context) ([]int64, error)
 	ListTVShowTmdbIDsWithSeasons(ctx context.Context) ([]database.TVShowSeerrInfo, error)
 	ListPublishedDirectNzbSegments(ctx context.Context) ([]database.PublishedDirectNzbSegment, error)
+	TouchQueueItemSearched(ctx context.Context, libraryItemID int64) error
 }
 
 type SeerrClient interface {
@@ -169,8 +172,6 @@ type Service struct {
 	recentURLHits      map[string]time.Time
 	searchAttemptMu    sync.Mutex
 	searchAttempts     map[string]searchAttemptRecord
-	recentShowSearchMu sync.Mutex
-	recentShowSearches map[int64]time.Time
 
 	// TTL caches for policy data, guarded by profileCacheMu (O-04).
 	// These are loaded from the DB at most once per 5 minutes.
@@ -260,7 +261,7 @@ type QueueManageResult struct {
 	SearchCandidateCnt int    `json:"searchCandidateCount,omitempty"`
 }
 
-const pendingQueueBatchSize = 200 // process up to 200 items per scheduler tick (was 50)
+const pendingQueueBatchSize = 1000 // process up to 1000 items per scheduler tick
 
 const (
 	defaultInlineFallbackDepth  = 3
@@ -270,7 +271,6 @@ const (
 	selectedResumeCooldown      = 5 * time.Minute
 	selectedURLCooldown         = 30 * time.Minute
 	searchRequestCooldown       = 20 * time.Minute
-	tvShowSearchCooldown        = 10 * time.Minute
 )
 
 type searchAttemptRecord struct {
@@ -411,7 +411,6 @@ func NewService(repo Repository, seerr SeerrClient, hydra HydraClient) *Service 
 		dispatchC:          make(chan struct{}, 1),
 		recentURLHits:      make(map[string]time.Time),
 		searchAttempts:     make(map[string]searchAttemptRecord),
-		recentShowSearches: make(map[int64]time.Time),
 	}
 }
 
@@ -547,6 +546,17 @@ func (s *Service) SyncRequests(ctx context.Context) (SyncResult, error) {
 				_ = s.enrichMovieRequest(enrichCtx, lid, tmdbID)
 			}()
 		case "tv":
+			if len(request.Seasons) > 0 {
+				// Season-level request: expand into per-episode library items via TMDB.
+				created, ids, err := s.syncSeasonRequest(ctx, request)
+				if err != nil {
+					s.logger.Warn().Err(err).Int64("seerrID", request.ID).Msg("seerr sync: season request expand failed")
+					continue
+				}
+				result.Created += created
+				result.CreatedLibraryItemIDs = append(result.CreatedLibraryItemIDs, ids...)
+				continue
+			}
 			libraryItemID, created, err := s.repo.UpsertEpisodeRequest(
 				ctx,
 				fmt.Sprintf("%d", request.ID),
@@ -577,6 +587,65 @@ func (s *Service) SyncRequests(ctx context.Context) (SyncResult, error) {
 		s.wakeDispatch()
 	}
 	return result, nil
+}
+
+// syncSeasonRequest expands a Seerr season-level TV request into per-episode library items.
+// It fetches episode data from TMDB for each requested season and calls UpsertEpisodeRequest
+// for each episode, which is idempotent so re-runs are safe.
+func (s *Service) syncSeasonRequest(ctx context.Context, req seerr.Request) (int, []int64, error) {
+	if s.tmdb == nil {
+		return 0, nil, fmt.Errorf("tmdb client unavailable")
+	}
+	details, err := s.tmdb.TVDetails(ctx, req.TMDBID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("tmdb lookup failed: %w", err)
+	}
+	title := strings.TrimSpace(details.Name)
+	if title == "" {
+		title = req.MediaTitle
+	}
+	year := req.MediaYear
+	if year == 0 && len(details.FirstAirDate) >= 4 {
+		if y, err2 := strconv.Atoi(details.FirstAirDate[:4]); err2 == nil {
+			year = y
+		}
+	}
+	var created int
+	var ids []int64
+	for _, seasonNum := range req.Seasons {
+		season, err := s.tmdb.TVSeason(ctx, req.TMDBID, seasonNum)
+		if err != nil {
+			s.logger.Warn().Err(err).Int64("tmdbID", req.TMDBID).Int("season", seasonNum).Msg("seerr sync: tmdb season fetch failed")
+			continue
+		}
+		for _, ep := range season.Episodes {
+			if ep.EpisodeNumber <= 0 {
+				continue
+			}
+			externalID := fmt.Sprintf("%d-s%de%d", req.ID, seasonNum, ep.EpisodeNumber)
+			lid, wasCreated, upsertErr := s.repo.UpsertEpisodeRequest(
+				ctx, externalID, req.TVDBID, req.TMDBID, title, year,
+				seasonNum, ep.EpisodeNumber, ep.Name,
+			)
+			if upsertErr != nil {
+				s.logger.Warn().Err(upsertErr).Str("externalID", externalID).Msg("seerr sync: episode upsert failed")
+				continue
+			}
+			if wasCreated {
+				created++
+				ids = append(ids, lid)
+			}
+		}
+	}
+	if created > 0 {
+		tmdbID, tvdbID := req.TMDBID, req.TVDBID
+		go func() {
+			enrichCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = s.enrichEpisodeRequest(enrichCtx, ids[0], tmdbID, tvdbID, "")
+		}()
+	}
+	return created, ids, nil
 }
 
 func (s *Service) CreateSeerrRequest(ctx context.Context, mediaType string, tmdbID int64) (SyncResult, error) {
@@ -974,18 +1043,22 @@ func (s *Service) filterPendingSearchTargets(targets []database.PendingLibrarySe
 	}
 	selectedTargets := make([]database.PendingLibrarySearchTarget, 0, len(targets))
 	searchTargets := make([]database.PendingLibrarySearchTarget, 0, len(targets))
-	seenShows := make(map[int64]bool)
+	// Sonarr/Radarr group missing episodes by show+season: one search per season,
+	// not one per episode. The season pack attempt inside the BullMQ worker covers
+	// all missing episodes from that season in a single Hydra2 query.
+	type showSeason struct{ tvShowID int64; season int }
+	seenShowSeasons := make(map[showSeason]bool)
 	for _, target := range targets {
 		if target.SelectedReleaseID > 0 || target.Selected {
 			selectedTargets = append(selectedTargets, target)
 			continue
 		}
 		if strings.EqualFold(target.MediaType, "episode") && target.TVShowID > 0 {
-			if seenShows[target.TVShowID] || s.shouldDeferTVShowSearch(target.TVShowID, now) {
+			key := showSeason{target.TVShowID, target.SeasonNumber}
+			if seenShowSeasons[key] {
 				continue
 			}
-			seenShows[target.TVShowID] = true
-			s.markTVShowSearchQueued(target.TVShowID, now)
+			seenShowSeasons[key] = true
 		}
 		searchTargets = append(searchTargets, target)
 		if len(searchTargets) >= pendingQueueBatchSize {
@@ -995,29 +1068,6 @@ func (s *Service) filterPendingSearchTargets(targets []database.PendingLibrarySe
 	return append(selectedTargets, searchTargets...)
 }
 
-func (s *Service) shouldDeferTVShowSearch(tvShowID int64, now time.Time) bool {
-	if s == nil || tvShowID <= 0 {
-		return false
-	}
-	s.recentShowSearchMu.Lock()
-	defer s.recentShowSearchMu.Unlock()
-	for id, queuedAt := range s.recentShowSearches {
-		if now.Sub(queuedAt) >= tvShowSearchCooldown {
-			delete(s.recentShowSearches, id)
-		}
-	}
-	lastAt, ok := s.recentShowSearches[tvShowID]
-	return ok && now.Sub(lastAt) < tvShowSearchCooldown
-}
-
-func (s *Service) markTVShowSearchQueued(tvShowID int64, now time.Time) {
-	if s == nil || tvShowID <= 0 {
-		return
-	}
-	s.recentShowSearchMu.Lock()
-	s.recentShowSearches[tvShowID] = now
-	s.recentShowSearchMu.Unlock()
-}
 
 func (s *Service) shouldDispatchSelectedTarget(target database.PendingLibrarySearchTarget, now time.Time) bool {
 	if target.SelectedReleaseID <= 0 {
@@ -1149,6 +1199,9 @@ func (s *Service) ProcessLibraryItem(ctx context.Context, libraryItemID int64) e
 		return err
 	}
 	_, err = s.SearchLibrary(WithAsyncDownload(ctx), libraryItemID)
+	// Record search time regardless of outcome so the backlog scheduler skips
+	// this item until the per-item cooldown expires (matches Sonarr's LastSearchTime).
+	_ = s.repo.TouchQueueItemSearched(ctx, libraryItemID)
 	return err
 }
 
@@ -1386,6 +1439,12 @@ func (s *Service) RetryFailedQueue(ctx context.Context) (BulkQueueRetryResult, e
 func isDeadlock(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.SQLState() == "40P01"
+}
+
+// isFKViolation returns true when err is a PostgreSQL foreign-key constraint violation (SQLSTATE 23503).
+func isFKViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.SQLState() == "23503"
 }
 
 func (s *Service) SearchLibrary(ctx context.Context, libraryItemID int64) (SearchResult, error) {
@@ -1932,6 +1991,9 @@ func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID in
 	// NZBDocumentID != nil check at the top of this function will reuse the stored
 	// bytes on the next attempt instead of calling NZBFinder again.
 	if storeErr := s.repo.StoreRawNZBDocument(ctx, current.SelectedReleaseID, fileName, raw, current.ExternalURL); storeErr != nil {
+		if isFKViolation(storeErr) {
+			return nil, nil, nil
+		}
 		s.logger.Warn().Err(storeErr).Int64("srId", current.SelectedReleaseID).Msg("early NZB store failed — will re-download on next attempt if restart occurs")
 	}
 	imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
@@ -1958,6 +2020,11 @@ func (s *Service) fetchIndexAndRelease(ctx context.Context, selectedReleaseID in
 		}
 		result, err := s.promoteNextAfterFailure(ctx, current, err.Error())
 		return result, nil, err
+	}
+	if item.NZBDocumentID != nil {
+		if calErr := s.repo.CalibrateNZBOffsets(ctx, *item.NZBDocumentID); calErr != nil {
+			s.logger.Warn().Err(calErr).Int64("nzbDocumentID", *item.NZBDocumentID).Msg("calibrate: yEnc offset prefetch failed")
+		}
 	}
 	if err := s.repo.SetImportedNZBIndexed(ctx, item.QueueItemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2048,6 +2115,9 @@ func (s *Service) fetchAndImportSelectedReleaseDepth(ctx context.Context, select
 		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
 	}
 	if storeErr := s.repo.StoreRawNZBDocument(ctx, current.SelectedReleaseID, fileName, raw, current.ExternalURL); storeErr != nil {
+		if isFKViolation(storeErr) {
+			return nil, nil
+		}
 		s.logger.Warn().Err(storeErr).Int64("srId", current.SelectedReleaseID).Msg("early NZB store failed — will re-download on next attempt if restart occurs")
 	}
 	imported, err := nzb.BuildImportedNZB(fileName, raw, fmt.Sprintf("selected-release:%d", current.SelectedReleaseID), current.ExternalURL)
@@ -2297,14 +2367,17 @@ func buildSearchCandidates(results []hydra.SearchResult, required ranking.Requir
 func candidateFailurePenaltyProfile(history database.CandidateHistory) (effectiveFailureCount int, degraded bool, durableRejectThreshold int) {
 	effectiveFailureCount = history.FailureCount
 	degraded = history.FailureCount > 0
-	durableRejectThreshold = 5
+	// Sonarr blocks on first failure. Allow 1 retry only for truly transient
+	// reasons (process restart mid-download, indexer quota). Everything else
+	// is rejected after the first attempt.
+	durableRejectThreshold = 1
 	if isSoftCandidateFailureReason(history.LastFailureReason) {
 		degraded = false
-		durableRejectThreshold = 8
-		if effectiveFailureCount <= 2 {
+		durableRejectThreshold = 3
+		if effectiveFailureCount <= 1 {
 			effectiveFailureCount = 0
 		} else {
-			effectiveFailureCount -= 2
+			effectiveFailureCount -= 1
 		}
 	}
 	if effectiveFailureCount < 0 {
@@ -2523,6 +2596,11 @@ func (s *Service) importSelectedRelease(ctx context.Context, current database.Re
 			return nil, nil
 		}
 		return s.promoteNextAfterFailureDepth(ctx, current, err.Error(), depth)
+	}
+	if item.NZBDocumentID != nil {
+		if calErr := s.repo.CalibrateNZBOffsets(ctx, *item.NZBDocumentID); calErr != nil {
+			s.logger.Warn().Err(calErr).Int64("nzbDocumentID", *item.NZBDocumentID).Msg("calibrate: yEnc offset prefetch failed")
+		}
 	}
 	if err := s.repo.SetImportedNZBIndexed(ctx, item.QueueItemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

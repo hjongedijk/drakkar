@@ -637,12 +637,13 @@ func (db *DB) GetQueueRetryTarget(ctx context.Context, queueItemID int64) (Queue
 
 func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLibrarySearchTarget, error) {
 	rows, err := db.SQL.QueryContext(ctx, `
-		select item.library_item_id, item.media_type, coalesce(item.tv_show_id, 0), item.selected, coalesce(item.selected_release_id, 0), coalesce(item.external_url, ''), item.state, item.updated_at
+		select item.library_item_id, item.media_type, coalesce(item.tv_show_id, 0), coalesce(item.season_number, 0), item.selected, coalesce(item.selected_release_id, 0), coalesce(item.external_url, ''), item.state, item.updated_at
 		from (
 			select distinct on (q.library_item_id)
 				q.library_item_id,
 				li.media_type,
 				tv.id as tv_show_id,
+				ep.season_number,
 				(q.selected_release_id is not null and q.state in ($1, $3)) as selected,
 				q.selected_release_id,
 				rc.external_url,
@@ -660,8 +661,11 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 			  and li.media_type in ('movie', 'episode', 'tv')
 			  and (
 			    -- Normal pending items: no release selected yet.
+			    -- last_searched_at cooldown (1 h) mirrors Sonarr/Radarr LastSearchTime:
+			    -- once searched, skip until the cooldown expires to avoid hammering Hydra2.
 			    (q.selected_release_id is null and q.state in ($1, $2)
-			     and (q.state != $2 or q.updated_at < now() - interval '2 hours'))
+			     and (q.state != $2 or q.updated_at < now() - interval '2 hours')
+			     and (q.last_searched_at is null or q.last_searched_at < now() - interval '1 hour'))
 			    -- Resume items: release already selected, but queue item is still
 			    -- in requested. These should be dispatched immediately so the
 			    -- worker can continue fetch/import without waiting for retry pass.
@@ -677,6 +681,16 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 			      where m.id = li.movie_id
 			        and m.release_date is not null
 			        and m.release_date > current_date
+			  )
+			  -- Skip TV episodes that haven't aired yet (air_date in the future).
+			  -- NULL air_date = unknown, search anyway (mirrors Sonarr behaviour).
+			  -- monitoring_mode='future' explicitly opts into pre-air searching.
+			  and (
+			      li.media_type != 'episode'
+			      or ep.id is null
+			      or ep.air_date is null
+			      or ep.air_date <= current_date
+			      or coalesce(tv.monitoring_mode, 'all') = 'future'
 			  )
 			  -- TV monitoring mode filter (applies only to episode items).
 			  -- 'all'     → no extra filter (default)
@@ -714,7 +728,7 @@ func (db *DB) ListPendingLibrarySearchTargets(ctx context.Context) ([]PendingLib
 	var out []PendingLibrarySearchTarget
 	for rows.Next() {
 		var item PendingLibrarySearchTarget
-		if err := rows.Scan(&item.LibraryItemID, &item.MediaType, &item.TVShowID, &item.Selected, &item.SelectedReleaseID, &item.ExternalURL, &item.State, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.LibraryItemID, &item.MediaType, &item.TVShowID, &item.SeasonNumber, &item.Selected, &item.SelectedReleaseID, &item.ExternalURL, &item.State, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -1757,11 +1771,16 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 		return nil, fmt.Errorf("fail/insert-fr (rc=%d): %w", releaseCandidateID, err)
 	}
 
-	// Collect blocklist keys for hard-reject releases. Inserts happen after
-	// commit to avoid row-lock contention when many workers process releases
-	// from the same indexer group simultaneously.
+	// Collect blocklist keys for ALL failures (matches Sonarr: blocklist on any
+	// download failure). Hard rejects are permanent; soft failures get a 7-day TTL
+	// so the same NZB isn't retried immediately but can resurface if re-uploaded.
+	// Inserts happen after commit to avoid row-lock contention.
 	var pendingBlocklistKeys []string
-	if hardReject && strings.TrimSpace(externalURL) != "" {
+	pendingBlocklistTTL := 0 // 0 = permanent
+	if !hardReject {
+		pendingBlocklistTTL = 7 // soft failure: 7-day TTL
+	}
+	if strings.TrimSpace(externalURL) != "" {
 		var title, indexerName string
 		var sizeBytes int64
 		var postedAt time.Time
@@ -1857,7 +1876,7 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 		if err = tx.Commit(); err != nil {
 			return nil, fmt.Errorf("fail/commit-no-next (li=%d): %w", libraryItemID, err)
 		}
-		db.flushBlocklistKeys(pendingBlocklistKeys, reason)
+		db.flushBlocklistKeys(pendingBlocklistKeys, reason, pendingBlocklistTTL)
 		return nil, nil
 	}
 
@@ -1887,7 +1906,7 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("fail/commit-next (li=%d): %w", libraryItemID, err)
 	}
-	db.flushBlocklistKeys(pendingBlocklistKeys, reason)
+	db.flushBlocklistKeys(pendingBlocklistKeys, reason, pendingBlocklistTTL)
 
 	next, err := db.GetSelectedReleaseSummary(ctx, nextSelectedReleaseID)
 	if err != nil {
@@ -2230,20 +2249,21 @@ func loadBlocklistMapUncached(ctx context.Context, q sqlQuerier) (map[string]str
 	return out, nil
 }
 
-// flushBlocklistKeys inserts collected hard-reject blocklist keys outside any
-// transaction. Errors are swallowed: the item is already failed; missing a
-// blocklist entry just means the release might be picked again next cycle.
-func (db *DB) flushBlocklistKeys(keys []string, reason string) {
+// flushBlocklistKeys inserts collected blocklist keys outside any transaction.
+// ttlDays=0 means permanent (NULL expires_at); ttlDays>0 expires after that many days.
+// Errors are swallowed: the item is already failed; a missing entry just means
+// the release might surface again next cycle.
+func (db *DB) flushBlocklistKeys(keys []string, reason string, ttlDays int) {
 	if len(keys) == 0 {
 		return
 	}
 	for _, key := range keys {
 		_, _ = db.SQL.ExecContext(context.Background(), `
-			insert into blocklist_items (key, reason)
-			values ($1, $2)
+			insert into blocklist_items (key, reason, expires_at)
+			values ($1, $2, case when $3 > 0 then now() + ($3 * interval '1 day') else null end)
 			on conflict (key)
-			do update set reason = excluded.reason, expires_at = null`,
-			key, reason)
+			do update set reason = excluded.reason, expires_at = excluded.expires_at`,
+			key, reason, ttlDays)
 	}
 	invalidateBlocklistCache()
 }
@@ -2795,4 +2815,15 @@ func (db *DB) ListTVShowTmdbIDsWithSeasons(ctx context.Context) ([]TVShowSeerrIn
 		out = append(out, TVShowSeerrInfo{TMDBID: tmdbID, Seasons: seasonsByShow[tmdbID]})
 	}
 	return out, nil
+}
+
+// TouchQueueItemSearched records that a Hydra2 search was just attempted for
+// this library item. Equivalent to Sonarr/Radarr's LastSearchTime per episode/movie:
+// prevents the backlog scheduler from re-queuing the same item within the cooldown.
+func (db *DB) TouchQueueItemSearched(ctx context.Context, libraryItemID int64) error {
+	_, err := db.SQL.ExecContext(ctx, `
+		UPDATE queue_items SET last_searched_at = now()
+		WHERE library_item_id = $1 AND state NOT IN ('available', 'failed')`,
+		libraryItemID)
+	return err
 }

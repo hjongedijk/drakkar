@@ -4,6 +4,8 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Panel from '$lib/components/Panel.svelte';
   import Button from '$lib/components/Button.svelte';
@@ -11,7 +13,7 @@
   import { api, subscribeEvents } from '$lib/api';
   import { toastError, toastSuccess } from '$lib/toast';
 
-  type HealthSummary = { total: number; checked: number; healthy: number; neverChecked: number; consistencyIssues: number };
+  type HealthSummary = { total: number; checked: number; healthy: number; neverChecked: number; consistencyIssues: number; uncalibratedNZBFiles: number };
   type HealthEntry = {
     id: number;
     libraryItemId: number;
@@ -21,6 +23,7 @@
     lastCheckedAt?: string;
     healthOk?: boolean;
   };
+  type HealthEntriesPage = { items: HealthEntry[]; total: number };
   type ConsistencyIssue = {
     libraryItemId: number;
     title: string;
@@ -28,30 +31,60 @@
     queueState: string;
   };
 
+  const PAGE_SIZE = 100;
+
   let summary: HealthSummary | null = null;
-  let entries: HealthEntry[] = [];
+  let entriesPage: HealthEntriesPage = { items: [], total: 0 };
   let consistency: ConsistencyIssue[] = [];
   let loading = true;
   let checking = false;
   let republishing = false;
   let resettingOrphaned = false;
 
+  let filter: 'all' | 'broken' | 'unchecked' = 'all';
+  let page = 0;
+
   async function load() {
     loading = true;
     try {
-      const [nextSummary, nextEntries, nextConsistency] = await Promise.all([
+      const [nextSummary, nextConsistency] = await Promise.all([
         api.healthSummary(),
-        api.healthEntries(),
         api.healthConsistency()
       ]);
       summary = nextSummary;
-      entries = nextEntries.items ?? [];
       consistency = nextConsistency.items ?? [];
+      await loadEntries();
     } catch (err) {
       toastError(err instanceof Error ? err.message : String(err));
     } finally {
       loading = false;
     }
+  }
+
+  async function loadEntries() {
+    try {
+      const params = new URLSearchParams({
+        filter,
+        limit: String(PAGE_SIZE),
+        offset: String(page * PAGE_SIZE),
+      });
+      const res = await fetch(`/api/health/entries?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      entriesPage = await res.json();
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function setFilter(f: typeof filter) {
+    filter = f;
+    page = 0;
+    await loadEntries();
+  }
+
+  async function goPage(delta: number) {
+    page = Math.max(0, Math.min(lastPage, page + delta));
+    await loadEntries();
   }
 
   async function runCheck() {
@@ -111,6 +144,10 @@
   $: broken = checked - healthy;
   $: healthyPct = checked > 0 ? Math.round((healthy / checked) * 100) : 0;
   $: consistencyIssues = summary?.consistencyIssues ?? 0;
+  $: uncalibrated = summary?.uncalibratedNZBFiles ?? 0;
+  $: lastPage = Math.max(0, Math.ceil(entriesPage.total / PAGE_SIZE) - 1);
+  $: pageStart = entriesPage.total === 0 ? 0 : page * PAGE_SIZE + 1;
+  $: pageEnd = Math.min((page + 1) * PAGE_SIZE, entriesPage.total);
 
   onMount(() => {
     void load();
@@ -164,6 +201,11 @@
       <div class="stat-value {consistencyIssues > 0 ? 'danger' : 'ok'}">{consistencyIssues}</div>
       <div class="stat-label">Consistency issues</div>
       <div class="stat-hint">Available items with no symlink</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value {uncalibrated > 0 ? 'warn' : 'ok'}">{uncalibrated}</div>
+      <div class="stat-label">Uncalibrated NZB files</div>
+      <div class="stat-hint">Pending yEnc offset correction</div>
     </div>
   </section>
 
@@ -230,11 +272,16 @@
     </Panel>
   {/if}
 
-  <Panel title="Symlink Health Schedule" subtitle="All published media — symlink verified hourly against VFS target paths.">
-    <div slot="actions">
-      <StatusPill tone={broken > 0 ? 'warn' : 'ok'}>{entries.length} item(s)</StatusPill>
+  <Panel title="Symlink Health" subtitle="Broken and unchecked entries float to top.">
+    <div slot="actions" class="panel-actions">
+      <div class="filter-tabs">
+        <button class="filter-tab {filter === 'all' ? 'active' : ''}" on:click={() => setFilter('all')}>All</button>
+        <button class="filter-tab {filter === 'broken' ? 'active broken' : ''}" on:click={() => setFilter('broken')}>Broken</button>
+        <button class="filter-tab {filter === 'unchecked' ? 'active' : ''}" on:click={() => setFilter('unchecked')}>Unchecked</button>
+      </div>
+      <StatusPill tone={broken > 0 ? 'warn' : 'ok'}>{entriesPage.total} item(s)</StatusPill>
     </div>
-    {#if entries.length > 0}
+    {#if entriesPage.items.length > 0}
       <div class="table-wrap">
         <table>
           <thead>
@@ -246,7 +293,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each entries as entry}
+            {#each entriesPage.items as entry}
               <tr>
                 <td>
                   <div class="row-title">{shortName(entry.libraryPath)}</div>
@@ -268,8 +315,19 @@
           </tbody>
         </table>
       </div>
+      {#if entriesPage.total > PAGE_SIZE}
+        <div class="pagination">
+          <button class="page-btn" on:click={() => goPage(-1)} disabled={page === 0}>
+            <ChevronLeft size={14} />
+          </button>
+          <span class="page-info">{pageStart}–{pageEnd} of {entriesPage.total}</span>
+          <button class="page-btn" on:click={() => goPage(1)} disabled={page >= lastPage}>
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      {/if}
     {:else}
-      <div class="empty-state">{loading ? 'Loading health entries…' : 'No published media yet.'}</div>
+      <div class="empty-state">{loading ? 'Loading…' : filter === 'broken' ? 'No broken symlinks.' : filter === 'unchecked' ? 'No unchecked symlinks.' : 'No published media yet.'}</div>
     {/if}
   </Panel>
 
@@ -288,7 +346,7 @@
 <style>
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 14px;
     margin-bottom: 18px;
   }
@@ -440,7 +498,90 @@
     font-weight: 600;
   }
 
-  @media (max-width: 1100px) {
+  .panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .filter-tabs {
+    display: flex;
+    gap: 2px;
+    background: hsl(0 0% 100% / 0.05);
+    border-radius: 8px;
+    padding: 3px;
+  }
+
+  .filter-tab {
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .filter-tab:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .filter-tab.active {
+    background: hsl(0 0% 100% / 0.1);
+    color: hsl(var(--foreground));
+  }
+
+  .filter-tab.active.broken {
+    background: hsl(0 96% 82% / 0.15);
+    color: hsl(0 96% 82%);
+  }
+
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 14px 0 4px;
+  }
+
+  .page-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid hsl(0 0% 100% / 0.1);
+    background: transparent;
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .page-btn:hover:not(:disabled) {
+    background: hsl(0 0% 100% / 0.08);
+  }
+
+  .page-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  .page-info {
+    font-size: 13px;
+    color: hsl(var(--muted-foreground));
+    min-width: 120px;
+    text-align: center;
+  }
+
+  .empty-state {
+    padding: 24px;
+    text-align: center;
+  }
+
+  @media (max-width: 1200px) {
     .stats-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }

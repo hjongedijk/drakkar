@@ -47,6 +47,16 @@ type Settings struct {
 	Library       LibraryConfig       `json:"library"`
 	Indexer       IndexerConfig       `json:"indexer"`
 	Notifications NotificationsConfig `json:"notifications"`
+	Rclone        RcloneConfig        `json:"rclone"`
+}
+
+// RcloneConfig holds optional rclone remote control settings.
+// When RCAddr is set Drakkar calls vfs/refresh after publishing new content
+// so rclone's directory cache is invalidated immediately — matching nzbdav behaviour.
+type RcloneConfig struct {
+	// RCAddr: rclone remote control address (e.g. "http://drakkar_rclone:5572").
+	// Leave empty to disable VFS refresh (rclone dir-cache-time handles staleness).
+	RCAddr string `json:"rcAddr"`
 }
 
 // NotificationsConfig holds settings for outgoing event notifications.
@@ -103,10 +113,9 @@ func DefaultIndexerConfig() IndexerConfig {
 		MinimumAgeMinutes:           0,
 		RetentionDays:               0,
 		MaximumSizeMB:               0,
-		// Hydra-as-single-indexer setups need deliberate pacing to avoid
-		// rate-limiting the underlying providers.
-		SearchDelayMs:           1500,
-		BackgroundSearchWorkers: 3,
+		// 0 matches Radarr/Sonarr behaviour — NZBHydra2 handles its own rate limiting.
+		SearchDelayMs:           0,
+		BackgroundSearchWorkers: 10,
 	}
 }
 

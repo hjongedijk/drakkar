@@ -208,6 +208,37 @@ func (db *DB) CalibrateAllNZBOffsets(ctx context.Context) error {
 	return nil
 }
 
+// CalibrateNZBOffsetsBatch calibrates up to limit NZB documents that still have
+// uncalibrated files. Returns the number of documents processed.
+func (db *DB) CalibrateNZBOffsetsBatch(ctx context.Context, limit int) (int, error) {
+	rows, err := db.SQL.QueryContext(ctx, `
+		SELECT DISTINCT nzb_document_id FROM nzb_files WHERE calibrated_at IS NULL LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := db.CalibrateNZBOffsets(ctx, id); err != nil {
+			slog.Warn("calibrate batch: failed for document", "nzb_document_id", id, "err", err)
+		}
+	}
+	return len(ids), nil
+}
+
 // CalibrateNZBOffsets corrects segment decoded offsets for all files in an NZB
 // document by fetching the first segment of each file and measuring its actual
 // decoded size. This replaces the estimated offsets (0.74 or 0.97 factor) with

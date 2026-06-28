@@ -310,5 +310,11 @@ func (db *DB) FulfillEpisodeLibraryItem(ctx context.Context, libraryItemID, sour
 func (db *DB) markLibraryItemAvailable(ctx context.Context, libraryItemID int64) error {
 	_, err := db.SQL.ExecContext(ctx, `
 		UPDATE library_items SET available = true WHERE id = $1`, libraryItemID)
+	if err != nil {
+		return err
+	}
+	_, err = db.SQL.ExecContext(ctx, `
+		UPDATE queue_items SET state = 'available', updated_at = now()
+		WHERE library_item_id = $1 AND state != 'available'`, libraryItemID)
 	return err
 }

@@ -58,6 +58,7 @@ type StreamsProvider interface {
 type HealthRepository interface {
 	HealthSummary(ctx context.Context) (database.HealthSummary, error)
 	ListHealthEntries(ctx context.Context) ([]database.HealthEntry, error)
+	ListHealthEntriesPage(ctx context.Context, filter string, limit, offset int) (database.HealthEntriesPage, error)
 	ListConsistencyIssues(ctx context.Context) ([]database.ConsistencyIssue, error)
 	RecordHealthCheck(ctx context.Context, publicationID int64, ok bool) error
 }
@@ -153,9 +154,6 @@ type PublicationService interface {
 }
 
 type MaintenanceService interface {
-	RemoveOrphanedContent(ctx context.Context) (maintenance.Result, error)
-	RemoveBrokenMediaSymlinks(ctx context.Context) (maintenance.Result, error)
-	RemoveOrphanedCompletedSymlinks(ctx context.Context) (maintenance.Result, error)
 	DeepNZBHealthCheck(ctx context.Context) (maintenance.Result, error)
 }
 
@@ -1523,45 +1521,6 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		publishMutation("cache.prune", map[string]any{"deletedFiles": result.DeletedFiles, "deletedBytes": result.DeletedBytes})
 		respondJSON(w, http.StatusAccepted, result)
 	})
-	r.Post("/api/maintenance/orphaned-content", func(w http.ResponseWriter, r *http.Request) {
-		if maintenance == nil {
-			respondError(w, http.StatusNotImplemented, errors.New("maintenance unavailable"))
-			return
-		}
-		result, err := maintenance.RemoveOrphanedContent(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		publishMutation("maintenance.orphaned_content", map[string]any{"deletedFiles": result.DeletedFiles, "deletedRows": result.DeletedRows})
-		respondJSON(w, http.StatusAccepted, result)
-	})
-	r.Post("/api/maintenance/broken-media-symlinks", func(w http.ResponseWriter, r *http.Request) {
-		if maintenance == nil {
-			respondError(w, http.StatusNotImplemented, errors.New("maintenance unavailable"))
-			return
-		}
-		result, err := maintenance.RemoveBrokenMediaSymlinks(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		publishMutation("maintenance.broken_media_symlinks", map[string]any{"deletedFiles": result.DeletedFiles, "deletedRows": result.DeletedRows})
-		respondJSON(w, http.StatusAccepted, result)
-	})
-	r.Post("/api/maintenance/orphaned-completed-symlinks", func(w http.ResponseWriter, r *http.Request) {
-		if maintenance == nil {
-			respondError(w, http.StatusNotImplemented, errors.New("maintenance unavailable"))
-			return
-		}
-		result, err := maintenance.RemoveOrphanedCompletedSymlinks(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		publishMutation("maintenance.orphaned_completed_symlinks", map[string]any{"deletedFiles": result.DeletedFiles, "deletedRows": result.DeletedRows})
-		respondJSON(w, http.StatusAccepted, result)
-	})
 	r.Post("/api/maintenance/nzb-health-check", func(w http.ResponseWriter, r *http.Request) {
 		if maintenance == nil {
 			respondError(w, http.StatusNotImplemented, errors.New("maintenance unavailable"))
@@ -1590,18 +1549,28 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 	})
 	r.Get("/api/health/entries", func(w http.ResponseWriter, r *http.Request) {
 		if healthRepo == nil {
-			respondJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+			respondJSON(w, http.StatusOK, database.HealthEntriesPage{Items: []database.HealthEntry{}})
 			return
 		}
-		entries, err := healthRepo.ListHealthEntries(r.Context())
+		filter := r.URL.Query().Get("filter") // "all" | "broken" | "unchecked"
+		limit := 100
+		offset := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+				limit = n
+			}
+		}
+		if v := r.URL.Query().Get("offset"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		page, err := healthRepo.ListHealthEntriesPage(r.Context(), filter, limit, offset)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if entries == nil {
-			entries = []database.HealthEntry{}
-		}
-		respondJSON(w, http.StatusOK, map[string]any{"items": entries})
+		respondJSON(w, http.StatusOK, page)
 	})
 	r.Post("/api/health/check", func(w http.ResponseWriter, r *http.Request) {
 		if healthRepo == nil {
