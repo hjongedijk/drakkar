@@ -4133,6 +4133,23 @@ func (s *Service) ResetLibraryItem(ctx context.Context, libraryItemID int64) err
 	return s.repo.ResetLibraryItemState(ctx, libraryItemID)
 }
 
+// FailAndBlocklistRelease blocklists the given selected release (so it is never
+// re-selected for this library item) and promotes the next ranked candidate if
+// one exists, or marks the item failed so the retry task can trigger a fresh
+// search. Use this instead of ResetLibraryItem when the failure reason should
+// be persisted — e.g. from the NZB health check when segments are confirmed
+// missing on the NNTP server.
+func (s *Service) FailAndBlocklistRelease(ctx context.Context, selectedReleaseID int64, reason string) error {
+	next, err := s.repo.FailSelectedReleaseAndPromoteNext(ctx, selectedReleaseID, reason)
+	if err != nil {
+		return err
+	}
+	if next != nil && s.WorkQueue != nil {
+		s.WorkQueue.Push(ctx, next.LibraryItemID, 10)
+	}
+	return nil
+}
+
 // ResetOrphanedAvailableItemsResult summarises a bulk orphan-reset pass.
 type ResetOrphanedAvailableItemsResult struct {
 	Found  int `json:"found"`

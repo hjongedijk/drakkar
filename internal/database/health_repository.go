@@ -18,16 +18,17 @@ type HealthEntry struct {
 }
 
 type DeepHealthCandidate struct {
-	PublicationID int64
-	LibraryItemID int64
-	LibraryPath   string
-	TargetPath    string
-	CreatedAt     time.Time
-	LastCheckedAt *time.Time
-	HealthOK      *bool
-	NZBDocumentID int64
-	Title         string
-	HasPAR2       bool
+	PublicationID     int64
+	LibraryItemID     int64
+	LibraryPath       string
+	TargetPath        string
+	CreatedAt         time.Time
+	LastCheckedAt     *time.Time
+	HealthOK          *bool
+	NZBDocumentID     int64
+	Title             string
+	HasPAR2           bool
+	SelectedReleaseID int64
 }
 
 type HealthSummary struct {
@@ -238,7 +239,8 @@ func (db *DB) ListDeepHealthCandidates(ctx context.Context, limit int) ([]DeepHe
 		        FROM nzb_files nf
 		        WHERE nf.nzb_document_id = nd.id
 		          AND lower(nf.subject) LIKE '%.par2%'
-		    ) AS has_par2
+		    ) AS has_par2,
+		    sr.id AS selected_release_id
 		FROM symlink_publications sp
 		JOIN library_items li ON li.id = sp.library_item_id
 		JOIN queue_items qi ON qi.library_item_id = sp.library_item_id
@@ -292,6 +294,7 @@ func scanDeepHealthCandidates(rows deepHealthScanner) ([]DeepHealthCandidate, er
 			&item.NZBDocumentID,
 			&item.Title,
 			&item.HasPAR2,
+			&item.SelectedReleaseID,
 		); err != nil {
 			return nil, err
 		}

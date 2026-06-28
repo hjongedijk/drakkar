@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -119,10 +120,21 @@ func runNZBHealthCheckBatch(ctx context.Context, db *database.DB, workflowSvc *w
 			Int64("libraryItemId", c.LibraryItemID).
 			Str("title", c.Title).
 			Err(err).
-			Msg("health check: strict NZB validation failed — resetting item for re-queue")
+			Msg("health check: strict NZB validation failed — blocklisting release and promoting next")
 		_ = db.RecordHealthCheck(ctx, c.PublicationID, false)
-		if resetErr := workflowSvc.ResetLibraryItem(ctx, c.LibraryItemID); resetErr != nil {
-			logger.Error().Err(resetErr).Int64("libraryItemId", c.LibraryItemID).Msg("health check: reset failed")
+		// Remove symlinks before blocklisting so the filesystem is clean
+		// regardless of whether a next candidate exists.
+		paths, pathErr := db.DeleteSymlinkPublicationsForLibraryItem(ctx, c.LibraryItemID)
+		if pathErr == nil {
+			for _, p := range paths {
+				if removeErr := os.Remove(p); removeErr != nil && !os.IsNotExist(removeErr) {
+					logger.Warn().Str("path", p).Err(removeErr).Msg("health check: could not remove symlink")
+				}
+			}
+		}
+		blocklistErr := workflowSvc.FailAndBlocklistRelease(ctx, c.SelectedReleaseID, "strict health: "+err.Error())
+		if blocklistErr != nil {
+			logger.Error().Err(blocklistErr).Int64("libraryItemId", c.LibraryItemID).Msg("health check: blocklist failed")
 		} else if _, exists := resetSeen[c.LibraryItemID]; !exists {
 			resetSeen[c.LibraryItemID] = struct{}{}
 			result.ResetItems++
