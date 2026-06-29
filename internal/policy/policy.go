@@ -15,6 +15,7 @@ const (
 	KeyNZBFetchFailed         FailureKey = "nzb_fetch_failed"
 	KeyNZBFetch4xx            FailureKey = "nzb_fetch_4xx"    // 401/404/410/451 = permanent auth/not-found, blocklist
 	KeyNZBFetch403            FailureKey = "nzb_fetch_403"    // 403 = quota/rate-limit (e.g. NZBFinder), retry later
+	KeyNNTPThrottled          FailureKey = "nntp_throttled"   // NNTP 430 = connection/transfer limit, retry later
 	KeyPreflightFailed        FailureKey = "preflight_failed"
 	KeyPublishFailed          FailureKey = "publish_failed"
 	KeySymlinkFailed          FailureKey = "symlink_failed"
@@ -56,6 +57,7 @@ var defaultMatrix = map[FailureKey]Action{
 	KeyNZBFetchFailed:        ActionBlocklistAndSearch, // fetch failed → blocklist this URL, find another
 	KeyNZBFetch4xx:           ActionBlocklistAndSearch, // 401/404/410/451 = permanent error, blocklist immediately
 	KeyNZBFetch403:           ActionRetryLater,         // 403 = quota exhausted (NZBFinder etc.), retry when quota resets
+	KeyNNTPThrottled:         ActionRetryLater,         // NNTP 430 = transient connection limit, article still valid
 	KeyPreflightFailed:       ActionSearchAgain,        // transient preflight → try another release
 	KeyPublishFailed:         ActionRetryLater,         // FUSE publish issue → retry, don't abandon
 	KeySymlinkFailed:         ActionRetryLater,
@@ -72,8 +74,14 @@ var defaultMatrix = map[FailureKey]Action{
 func Classify(reason string) FailureKey {
 	r := strings.ToLower(strings.TrimSpace(reason))
 	switch {
-	case strings.Contains(r, "430") ||
-		strings.Contains(r, "article not found") ||
+	// NNTP 430 = "Transfer Error" / connection limit exceeded — transient throttle,
+	// the article still exists. Must be checked before the nntp_article_unavailable
+	// catch-all so a throttled download is retried rather than blocklisted.
+	case strings.Contains(r, "status 430") ||
+		strings.Contains(r, "body status 430"):
+		return KeyNNTPThrottled
+
+	case strings.Contains(r, "article not found") ||
 		strings.Contains(r, "nntp_article_unavailable") ||
 		strings.Contains(r, "missing article"):
 		return KeyMissingArticles
