@@ -1,4 +1,4 @@
 package version
 
 // Version is the current Drakkar release. Updated by release.sh.
-const Version = "0.1.86"
+const Version = "0.1.87"

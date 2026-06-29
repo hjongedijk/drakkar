@@ -1,0 +1,1199 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Drakkar API",
+    "version": "0.1.86",
+    "description": "Drakkar NZB/Usenet VFS media manager REST API.\n\nAuthentication: Pass a session cookie (`drakkar_session`) or Bearer API token (`Authorization: Bearer <token>` or `X-Api-Key: <token>`) on all requests except public paths.",
+    "contact": { "name": "Drakkar", "url": "https://github.com/hjongedijk/drakkar" }
+  },
+  "servers": [{ "url": "", "description": "Current host" }],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" },
+      "ApiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-Api-Key" },
+      "CookieAuth": { "type": "apiKey", "in": "cookie", "name": "drakkar_session" }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": { "error": { "type": "string" } }
+      },
+      "QueueItem": {
+        "type": "object",
+        "properties": {
+          "queueItemId": { "type": "integer" },
+          "libraryItemId": { "type": "integer" },
+          "libraryTitle": { "type": "string" },
+          "state": { "type": "string", "enum": ["pending","searching","selected","downloading","available","failed"] },
+          "failureReason": { "type": "string" },
+          "selectedReleaseId": { "type": "integer" },
+          "nzbDocumentId": { "type": "integer" },
+          "nzbFileName": { "type": "string" },
+          "nzbFileCount": { "type": "integer" },
+          "nzbSegmentCount": { "type": "integer" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "LibraryItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "mediaType": { "type": "string", "enum": ["movie","episode","tv"] },
+          "title": { "type": "string" },
+          "year": { "type": "integer" },
+          "overview": { "type": "string" },
+          "posterUrl": { "type": "string" },
+          "backdropUrl": { "type": "string" },
+          "available": { "type": "boolean" },
+          "requestedAt": { "type": "string", "format": "date-time" },
+          "queueState": { "type": "string" },
+          "failureReason": { "type": "string" },
+          "selectedReleaseId": { "type": "integer" },
+          "tmdbId": { "type": "integer" },
+          "tvdbId": { "type": "integer" },
+          "imdbId": { "type": "string" },
+          "availableCount": { "type": "integer" },
+          "missingCount": { "type": "integer" },
+          "seasonNumber": { "type": "integer" },
+          "episodeNumber": { "type": "integer" }
+        }
+      },
+      "ReleaseCandidate": {
+        "type": "object",
+        "properties": {
+          "selectedReleaseId": { "type": "integer" },
+          "releaseCandidateId": { "type": "integer" },
+          "libraryItemId": { "type": "integer" },
+          "title": { "type": "string" },
+          "externalUrl": { "type": "string" },
+          "indexerName": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" },
+          "postedAt": { "type": "string", "format": "date-time" },
+          "score": { "type": "number" },
+          "customFormatScore": { "type": "number" },
+          "selected": { "type": "boolean" },
+          "rejected": { "type": "boolean" },
+          "rejectReason": { "type": "string" },
+          "failureCount": { "type": "integer" },
+          "lastFailureReason": { "type": "string" }
+        }
+      },
+      "BlocklistItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "key": { "type": "string" },
+          "keyType": { "type": "string" },
+          "reason": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "releaseTitle": { "type": "string" },
+          "indexerName": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" }
+        }
+      },
+      "QualityProfile": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "isDefault": { "type": "boolean" },
+          "resolutions": { "type": "array", "items": { "type": "string" } },
+          "sources": { "type": "array", "items": { "type": "string" } },
+          "codecs": { "type": "array", "items": { "type": "string" } },
+          "languages": { "type": "array", "items": { "type": "string" } },
+          "audioFormats": { "type": "array", "items": { "type": "string" } },
+          "hdrFormats": { "type": "array", "items": { "type": "string" } },
+          "excludePatterns": { "type": "array", "items": { "type": "string" } },
+          "preferProper": { "type": "boolean" },
+          "preferRepack": { "type": "boolean" },
+          "rejectCam": { "type": "boolean" },
+          "allowUpgrade": { "type": "boolean" },
+          "cutoffResolution": { "type": "string" },
+          "minimumAgeHours": { "type": "number" },
+          "minMbPerMinute": { "type": "number" },
+          "maxMbPerMinute": { "type": "number" }
+        }
+      },
+      "TaskSchedule": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "group": { "type": "string" },
+          "interval": { "type": "string" },
+          "automated": { "type": "boolean" },
+          "lastRunAt": { "type": "string", "format": "date-time" },
+          "lastRunState": { "type": "string" }
+        }
+      },
+      "SubtitleFile": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "libraryItemId": { "type": "integer" },
+          "provider": { "type": "string" },
+          "language": { "type": "string" },
+          "path": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "APIToken": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "userId": { "type": "integer" },
+          "name": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "lastUsedAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "security": [
+    { "BearerAuth": [] },
+    { "ApiKeyHeader": [] },
+    { "CookieAuth": [] }
+  ],
+  "tags": [
+    { "name": "Auth", "description": "Authentication, sessions, and API tokens" },
+    { "name": "Queue", "description": "Download queue management" },
+    { "name": "Library", "description": "Media library items and searches" },
+    { "name": "Releases", "description": "Release candidates and selection" },
+    { "name": "Requests", "description": "Seerr request sync and management" },
+    { "name": "Blocklist", "description": "Release blocklist management" },
+    { "name": "Health", "description": "Symlink and NZB article health checks" },
+    { "name": "Tasks", "description": "Scheduled task status" },
+    { "name": "Quality", "description": "Quality profiles and definitions" },
+    { "name": "Subtitles", "description": "Subtitle files and search" },
+    { "name": "Settings", "description": "System configuration" },
+    { "name": "Policies", "description": "Queue decision policies" },
+    { "name": "Discover", "description": "Browse TMDB catalogue" },
+    { "name": "Media Players", "description": "Plex and Jellyfin integration" },
+    { "name": "VFS", "description": "Virtual filesystem browser" },
+    { "name": "NZBs", "description": "NZB file import" },
+    { "name": "Webhooks", "description": "Inbound webhooks from Seerr" }
+  ],
+  "paths": {
+    "/api/status": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Service status and integration health",
+        "responses": {
+          "200": { "description": "Service status object with integration statuses and runtime info" }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Login with username and password",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Login successful — sets session cookie" },
+          "401": { "description": "Invalid credentials" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Logout — clears session cookie",
+        "security": [],
+        "responses": { "200": { "description": "Logged out" } }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Get current user info",
+        "responses": {
+          "200": { "description": "User object with id, username, role" }
+        }
+      }
+    },
+    "/api/auth/tokens": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "List API tokens for current user",
+        "responses": {
+          "200": {
+            "description": "Array of API tokens",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/APIToken" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Create a new API token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "expiresAt": { "type": "string", "format": "date-time", "description": "Optional expiry (empty = no expiry)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created token — raw `token` field only returned here, not in list endpoint",
+            "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/APIToken" }, { "type": "object", "properties": { "token": { "type": "string" } } }] } } }
+          }
+        }
+      }
+    },
+    "/api/auth/tokens/{id}": {
+      "delete": {
+        "tags": ["Auth"],
+        "summary": "Delete an API token",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "List users",
+        "responses": { "200": { "description": "Array of users" } }
+      },
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Create user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" },
+                  "role": { "type": "string", "default": "admin" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Created user" } }
+      }
+    },
+    "/api/users/{id}/password": {
+      "put": {
+        "tags": ["Auth"],
+        "summary": "Change user password",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "password": { "type": "string" } } } } }
+        },
+        "responses": { "200": { "description": "Password changed" } }
+      }
+    },
+    "/api/queue": {
+      "get": {
+        "tags": ["Queue"],
+        "summary": "Get current queue and work-queue status",
+        "responses": {
+          "200": {
+            "description": "Queue items and work queue status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": { "type": "array", "items": { "$ref": "#/components/schemas/QueueItem" } },
+                    "workQueue": { "type": "object", "properties": { "paused": { "type": "boolean" }, "depth": { "type": "integer" } } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/queue/pause": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Pause the work queue",
+        "responses": { "200": { "description": "Updated work queue status" } }
+      }
+    },
+    "/api/queue/resume": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Resume the work queue",
+        "responses": { "200": { "description": "Updated work queue status" } }
+      }
+    },
+    "/api/queue/{id}/retry": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Retry a single queue item",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Result with action taken" } }
+      }
+    },
+    "/api/queue/{id}/action": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Perform an action on a queue item",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "action": { "type": "string", "enum": ["retry","reset","blocklist","skip"] } } } } }
+        },
+        "responses": { "200": { "description": "Result with action taken" } }
+      }
+    },
+    "/api/queue/bulk-action": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Perform an action on multiple queue items",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "queueItemIds": { "type": "array", "items": { "type": "integer" } }, "action": { "type": "string" } } } } }
+        },
+        "responses": { "200": { "description": "Processed count" } }
+      }
+    },
+    "/api/queue/retry-failed": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Retry all failed queue items",
+        "responses": {
+          "200": {
+            "description": "Retry result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "processed": { "type": "integer" }, "retried": { "type": "integer" }, "failed": { "type": "integer" } } } } }
+          }
+        }
+      }
+    },
+    "/api/queue/clear-failed": {
+      "post": {
+        "tags": ["Queue"],
+        "summary": "Clear all failed queue items",
+        "responses": { "200": { "description": "Number cleared" } }
+      }
+    },
+    "/api/library": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "List library items with pagination and filters",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer", "default": 25 } },
+          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "Title search" },
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["all","movie","tv","episode"] } },
+          { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["all","available","missing","active","failed"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated library items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": { "type": "array", "items": { "$ref": "#/components/schemas/LibraryItem" } },
+                    "page": { "type": "integer" },
+                    "pageSize": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "totalPages": { "type": "integer" },
+                    "totalMonitored": { "type": "integer" },
+                    "sumAvailable": { "type": "integer" },
+                    "sumMissing": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/search": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Full-text search library items",
+        "parameters": [{ "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Matching items" } }
+      }
+    },
+    "/api/library/{id}/details": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Get detailed library item (with seasons/episodes)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Library detail with seasons, episodes, monitoring mode" } }
+      }
+    },
+    "/api/library/{id}/search": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Trigger immediate search for a specific library item",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "202": { "description": "Search started — SSE event `library.search` fires on completion" } }
+      }
+    },
+    "/api/library/{id}/reset": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Reset a library item back to pending state",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Reset confirmed" } }
+      }
+    },
+    "/api/library/{id}/republish": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Republish an existing selected release",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Republish result" } }
+      }
+    },
+    "/api/library/{id}/restore-rejected": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Restore rejected release candidates for retry",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Restored count" } }
+      }
+    },
+    "/api/library/{id}/replacements": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Search for quality replacement releases",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Replacement candidates found" } }
+      }
+    },
+    "/api/library/{id}/profile": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Get per-item quality profile override",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Profile or null" } }
+      },
+      "put": {
+        "tags": ["Library"],
+        "summary": "Set per-item quality profile override",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "profileId": { "type": "integer", "nullable": true } } } } }
+        },
+        "responses": { "200": { "description": "Updated" } }
+      }
+    },
+    "/api/library/{id}/grab-history": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Get grab history for a library item",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Grab history entries" } }
+      }
+    },
+    "/api/library/search-pending": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Search all pending/missing library items in background",
+        "responses": { "202": { "description": "Started — SSE event `library.search_pending` on completion" } }
+      }
+    },
+    "/api/library/search-upgrades": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Search quality upgrades for available items",
+        "responses": { "202": { "description": "Started — SSE event `library.search_upgrades` on completion" } }
+      }
+    },
+    "/api/library/republish-pending": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Republish all library items with a selected release but no symlink",
+        "responses": { "202": { "description": "Started — SSE event `library.republish_pending` on completion" } }
+      }
+    },
+    "/api/library/reset-orphaned-available": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Reset available items with no symlink back to pending",
+        "responses": { "202": { "description": "Started — SSE event `library.reset_orphaned` on completion" } }
+      }
+    },
+    "/api/library/fill-missing-episodes": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Create library items for episodes not yet tracked (TMDB sync)",
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "showsProcessed": { "type": "integer" }, "episodesFound": { "type": "integer" }, "itemsCreated": { "type": "integer" } } } } }
+          }
+        }
+      }
+    },
+    "/api/library/backfill-metadata": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Re-enrich library items with latest TMDB metadata",
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "processedMovies": { "type": "integer" }, "processedShows": { "type": "integer" }, "enriched": { "type": "integer" }, "failed": { "type": "integer" } } } } }
+          }
+        }
+      }
+    },
+    "/api/releases/{libraryItemId}": {
+      "get": {
+        "tags": ["Releases"],
+        "summary": "Get release candidates for a library item",
+        "parameters": [{ "name": "libraryItemId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": {
+          "200": {
+            "description": "Release candidates",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/ReleaseCandidate" } } } } } }
+          }
+        }
+      }
+    },
+    "/api/releases/{id}/select": {
+      "post": {
+        "tags": ["Releases"],
+        "summary": "Manually select a release candidate",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" }, "description": "releaseCandidateId" }],
+        "responses": { "200": { "description": "Selection result" } }
+      }
+    },
+    "/api/releases/{id}/reject": {
+      "post": {
+        "tags": ["Releases"],
+        "summary": "Reject a release candidate",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "reason": { "type": "string", "default": "manual_reject" } } } } }
+        },
+        "responses": { "200": { "description": "Rejection result" } }
+      }
+    },
+    "/api/releases/{id}/restore": {
+      "post": {
+        "tags": ["Releases"],
+        "summary": "Restore a previously rejected release candidate",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Restore result" } }
+      }
+    },
+    "/api/releases/{id}/skip": {
+      "post": {
+        "tags": ["Releases"],
+        "summary": "Skip (soft-reject) a release candidate",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Skip result" } }
+      }
+    },
+    "/api/requests": {
+      "get": {
+        "tags": ["Requests"],
+        "summary": "List Seerr requests",
+        "responses": { "200": { "description": "Array of request items" } }
+      }
+    },
+    "/api/requests/sync": {
+      "post": {
+        "tags": ["Requests"],
+        "summary": "Sync requests from Seerr",
+        "responses": {
+          "200": {
+            "description": "Sync result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "seen": { "type": "integer" }, "created": { "type": "integer" } } } } }
+          }
+        }
+      }
+    },
+    "/api/requests/push-library": {
+      "post": {
+        "tags": ["Requests"],
+        "summary": "Push library items missing from Seerr as new requests",
+        "responses": { "200": { "description": "Push result with counts" } }
+      }
+    },
+    "/api/requests/{id}/profile": {
+      "put": {
+        "tags": ["Requests"],
+        "summary": "Set quality profile for a request",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "profileId": { "type": "integer", "nullable": true } } } } }
+        },
+        "responses": { "200": { "description": "Updated" } }
+      }
+    },
+    "/api/blocklist": {
+      "get": {
+        "tags": ["Blocklist"],
+        "summary": "List blocklist entries (paginated)",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer" } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer" } },
+          { "name": "q", "in": "query", "schema": { "type": "string" } },
+          { "name": "reason", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string" } },
+          { "name": "dir", "in": "query", "schema": { "type": "string", "enum": ["asc","desc"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Blocklist items",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/BlocklistItem" } }, "total": { "type": "integer" } } } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Blocklist"],
+        "summary": "Clear all blocklist entries (or filter by reason)",
+        "parameters": [{ "name": "reason", "in": "query", "schema": { "type": "string" }, "description": "If set, only entries with this reason are cleared" }],
+        "responses": { "200": { "description": "Cleared count" } }
+      }
+    },
+    "/api/blocklist/stats": {
+      "get": {
+        "tags": ["Blocklist"],
+        "summary": "Blocklist statistics",
+        "responses": { "200": { "description": "Counts by reason, active vs expired" } }
+      }
+    },
+    "/api/blocklist/manual": {
+      "post": {
+        "tags": ["Blocklist"],
+        "summary": "Add a manual blocklist entry",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["key","reason"],
+                "properties": {
+                  "key": { "type": "string" },
+                  "keyType": { "type": "string", "enum": ["raw","external_url","release_signature"] },
+                  "reason": { "type": "string" },
+                  "releaseTitle": { "type": "string" },
+                  "indexerName": { "type": "string" },
+                  "sizeMb": { "type": "number" },
+                  "postedDate": { "type": "string" },
+                  "expiresAt": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Created blocklist entry" } }
+      }
+    },
+    "/api/blocklist/{id}": {
+      "put": {
+        "tags": ["Blocklist"],
+        "summary": "Update a blocklist entry",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Updated entry" } }
+      },
+      "delete": {
+        "tags": ["Blocklist"],
+        "summary": "Delete a blocklist entry",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/health/summary": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Health check summary statistics",
+        "responses": {
+          "200": {
+            "description": "Summary counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total": { "type": "integer" },
+                    "checked": { "type": "integer" },
+                    "healthy": { "type": "integer" },
+                    "neverChecked": { "type": "integer" },
+                    "consistencyIssues": { "type": "integer" },
+                    "uncalibratedNZBFiles": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/entries": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "List symlink health entries",
+        "parameters": [
+          { "name": "filter", "in": "query", "schema": { "type": "string", "enum": ["all","broken","unchecked"] } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Health entries with total count" } }
+      }
+    },
+    "/api/health/check": {
+      "post": {
+        "tags": ["Health"],
+        "summary": "Run a symlink health check pass",
+        "responses": {
+          "200": {
+            "description": "Check result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "checked": { "type": "integer" }, "healthy": { "type": "integer" } } } } }
+          }
+        }
+      }
+    },
+    "/api/health/consistency": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "List consistency issues (available items missing symlinks)",
+        "responses": { "200": { "description": "Consistency issue items" } }
+      }
+    },
+    "/api/tasks/schedules": {
+      "get": {
+        "tags": ["Tasks"],
+        "summary": "List scheduled task status with last-run timestamps",
+        "responses": {
+          "200": {
+            "description": "Task schedules",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/TaskSchedule" } } } } } }
+          }
+        }
+      }
+    },
+    "/api/maintenance/nzb-health-check": {
+      "post": {
+        "tags": ["Health"],
+        "summary": "Run deep NZB article probe (scan all published items)",
+        "responses": { "200": { "description": "Maintenance result with scanned/reset counts" } }
+      }
+    },
+    "/api/profiles": {
+      "get": {
+        "tags": ["Quality"],
+        "summary": "List quality profiles",
+        "responses": {
+          "200": {
+            "description": "Profiles",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "profiles": { "type": "array", "items": { "$ref": "#/components/schemas/QualityProfile" } } } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Quality"],
+        "summary": "Create a quality profile",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QualityProfile" } } } },
+        "responses": { "200": { "description": "Created profile" } }
+      }
+    },
+    "/api/profiles/{id}": {
+      "delete": {
+        "tags": ["Quality"],
+        "summary": "Delete a quality profile",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/quality-definitions": {
+      "get": {
+        "tags": ["Quality"],
+        "summary": "List quality definitions (per-tier size limits)",
+        "responses": { "200": { "description": "Quality definitions" } }
+      }
+    },
+    "/api/quality-definitions/{id}": {
+      "put": {
+        "tags": ["Quality"],
+        "summary": "Update a quality definition",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "minMbPerMinute": { "type": "number" }, "maxMbPerMinute": { "type": "number" } } } } } },
+        "responses": { "200": { "description": "Updated definition" } }
+      }
+    },
+    "/api/subtitles/{libraryItemId}": {
+      "get": {
+        "tags": ["Subtitles"],
+        "summary": "List subtitle files for a library item",
+        "parameters": [{ "name": "libraryItemId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Subtitle files" } }
+      }
+    },
+    "/api/subtitles/{libraryItemId}/search": {
+      "post": {
+        "tags": ["Subtitles"],
+        "summary": "Search for subtitle candidates",
+        "parameters": [{ "name": "libraryItemId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "languages": { "type": "array", "items": { "type": "string" } } } } } }
+        },
+        "responses": { "200": { "description": "Candidate count" } }
+      }
+    },
+    "/api/subtitle-candidates/{libraryItemId}": {
+      "get": {
+        "tags": ["Subtitles"],
+        "summary": "List subtitle candidates",
+        "parameters": [{ "name": "libraryItemId", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Subtitle candidates" } }
+      }
+    },
+    "/api/subtitle-candidates/{id}/download": {
+      "post": {
+        "tags": ["Subtitles"],
+        "summary": "Download a subtitle candidate",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Download result with created paths" } }
+      }
+    },
+    "/api/subtitle-files/{id}": {
+      "delete": {
+        "tags": ["Subtitles"],
+        "summary": "Delete a subtitle file",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Get full system settings",
+        "responses": { "200": { "description": "All settings (NNTP providers, metadata keys, integrations, etc.)" } }
+      },
+      "put": {
+        "tags": ["Settings"],
+        "summary": "Save system settings",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "description": "Full settings object" } } } },
+        "responses": { "200": { "description": "Saved settings" } }
+      }
+    },
+    "/api/policies": {
+      "get": {
+        "tags": ["Policies"],
+        "summary": "Get queue decision policies",
+        "responses": { "200": { "description": "Policy settings" } }
+      },
+      "put": {
+        "tags": ["Policies"],
+        "summary": "Save queue decision policies",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "Saved policies" } }
+      }
+    },
+    "/api/discover/{mediaType}": {
+      "get": {
+        "tags": ["Discover"],
+        "summary": "Browse trending/popular media from TMDB",
+        "parameters": [
+          { "name": "mediaType", "in": "path", "required": true, "schema": { "type": "string", "enum": ["movie","tv"] } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+        ],
+        "responses": { "200": { "description": "Paginated media items" } }
+      }
+    },
+    "/api/discover/search": {
+      "get": {
+        "tags": ["Discover"],
+        "summary": "Search TMDB for movies and TV shows",
+        "parameters": [{ "name": "query", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Search results split by movies/tv" } }
+      }
+    },
+    "/api/discover/details/{mediaType}": {
+      "get": {
+        "tags": ["Discover"],
+        "summary": "Get TMDB details for a specific title",
+        "parameters": [
+          { "name": "mediaType", "in": "path", "required": true, "schema": { "type": "string", "enum": ["movie","tv"] } },
+          { "name": "tmdbId", "in": "query", "schema": { "type": "integer" } },
+          { "name": "imdbId", "in": "query", "schema": { "type": "string" } },
+          { "name": "title", "in": "query", "schema": { "type": "string" } },
+          { "name": "year", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "Full media details with cast, seasons, recommendations" } }
+      }
+    },
+    "/api/discover/request": {
+      "post": {
+        "tags": ["Discover"],
+        "summary": "Request media via Seerr and sync to library",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["tmdbId","mediaType"],
+                "properties": {
+                  "tmdbId": { "type": "integer" },
+                  "mediaType": { "type": "string", "enum": ["movie","tv"] },
+                  "seasons": { "type": "array", "items": { "type": "integer" }, "description": "Season numbers (TV only)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Sync result" } }
+      }
+    },
+    "/api/plex/test": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Test Plex connection",
+        "responses": { "200": { "description": "Connection result with server name and libraries" } }
+      }
+    },
+    "/api/plex/refresh": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Trigger Plex library refresh",
+        "responses": { "200": { "description": "Refresh triggered" } }
+      }
+    },
+    "/api/plex/libraries": {
+      "get": {
+        "tags": ["Media Players"],
+        "summary": "List Plex libraries",
+        "responses": { "200": { "description": "Array of Plex libraries" } }
+      }
+    },
+    "/api/plex/oauth/start": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Start Plex OAuth flow",
+        "responses": { "200": { "description": "OAuth PIN info and auth URL" } }
+      }
+    },
+    "/api/plex/oauth/poll": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Poll for Plex OAuth completion",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "pinId": { "type": "integer" } } } } }
+        },
+        "responses": { "200": { "description": "Auth result — authorized=true when token is ready" } }
+      }
+    },
+    "/api/jellyfin/test": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Test Jellyfin connection",
+        "responses": { "200": { "description": "Connection result" } }
+      }
+    },
+    "/api/jellyfin/refresh": {
+      "post": {
+        "tags": ["Media Players"],
+        "summary": "Trigger Jellyfin library refresh",
+        "responses": { "200": { "description": "Refresh triggered" } }
+      }
+    },
+    "/api/vfs": {
+      "get": {
+        "tags": ["VFS"],
+        "summary": "Browse the virtual filesystem",
+        "parameters": [{ "name": "path", "in": "query", "schema": { "type": "string" }, "description": "Path to list (empty = root)" }],
+        "responses": {
+          "200": {
+            "description": "Directory entries",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "entries": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "isDir": { "type": "boolean" }, "size": { "type": "integer", "format": "int64" } } } } } } } }
+          }
+        }
+      }
+    },
+    "/api/nzbs": {
+      "get": {
+        "tags": ["NZBs"],
+        "summary": "List imported NZB documents",
+        "responses": { "200": { "description": "NZB document list" } }
+      }
+    },
+    "/api/nzbs/import": {
+      "post": {
+        "tags": ["NZBs"],
+        "summary": "Upload and import an NZB file",
+        "requestBody": {
+          "required": true,
+          "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "file": { "type": "string", "format": "binary" } } } } }
+        },
+        "responses": { "200": { "description": "Created queue and library item IDs" } }
+      }
+    },
+    "/api/nzbs/import-url": {
+      "post": {
+        "tags": ["NZBs"],
+        "summary": "Import NZB from URL",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["url"], "properties": { "url": { "type": "string", "format": "uri" } } } } }
+        },
+        "responses": { "200": { "description": "Created queue and library item IDs" } }
+      }
+    },
+    "/api/nzbs/{id}": {
+      "delete": {
+        "tags": ["NZBs"],
+        "summary": "Delete an NZB document",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/streams": {
+      "get": {
+        "tags": ["VFS"],
+        "summary": "List active VFS streaming sessions",
+        "responses": { "200": { "description": "Active sessions with file name, offset, opened timestamp" } }
+      }
+    },
+    "/api/streams/{sessionId}/stop": {
+      "post": {
+        "tags": ["VFS"],
+        "summary": "Stop an active VFS streaming session",
+        "parameters": [{ "name": "sessionId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Stopped result" } }
+      }
+    },
+    "/api/tv-shows/{id}/monitoring": {
+      "put": {
+        "tags": ["Library"],
+        "summary": "Set TV show monitoring mode",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["all","future","missing","existing","first","latest","none"] } } } } }
+        },
+        "responses": { "200": { "description": "Updated" } }
+      }
+    },
+    "/api/tv-shows/{id}/prioritize-missing": {
+      "post": {
+        "tags": ["Library"],
+        "summary": "Immediately queue all missing episodes for a TV show",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "Result with queued count" } }
+      }
+    },
+    "/api/search/manual": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Manual full-text search across Hydra indexers",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["movie","tv","all"], "default": "all" } }
+        ],
+        "responses": { "200": { "description": "Search results with score, resolution, source, codec" } }
+      }
+    },
+    "/api/release-calendar": {
+      "get": {
+        "tags": ["Library"],
+        "summary": "Library items by release/air date",
+        "parameters": [{ "name": "month", "in": "query", "schema": { "type": "string", "description": "YYYY-MM" } }],
+        "responses": { "200": { "description": "Calendar entries grouped by date" } }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Prometheus-style operational metrics",
+        "responses": { "200": { "description": "Key-value metric map" } }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Server-Sent Events stream for real-time updates",
+        "description": "Subscribe to SSE events. Notable event kinds: `library.search_pending`, `library.search_upgrades`, `library.republish_pending`, `library.reset_orphaned`, `queue.stale_reset`, `queue.retry_background`, `library.republish_background`, `cache.prune_background`, `library.search`, `maintenance.nzb_health_check`",
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": { "text/event-stream": {} }
+          }
+        }
+      }
+    },
+    "/api/webhooks/seerr": {
+      "post": {
+        "tags": ["Webhooks"],
+        "summary": "Seerr notification webhook — triggers request sync on approval events",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "description": "Seerr standard webhook payload" } } }
+        },
+        "responses": {
+          "200": { "description": "Acknowledged immediately; sync runs in background" }
+        }
+      }
+    },
+    "/api/integrations/probe": {
+      "post": {
+        "tags": ["Settings"],
+        "summary": "Probe all configured integrations and return connectivity status",
+        "responses": { "200": { "description": "Integration probe results with latency" } }
+      }
+    },
+    "/api/cache/prune": {
+      "post": {
+        "tags": ["Settings"],
+        "summary": "Prune oldest decoded articles from disk block cache",
+        "responses": {
+          "200": {
+            "description": "Prune result",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "deletedFiles": { "type": "integer" }, "deletedBytes": { "type": "integer", "format": "int64" }, "filesBefore": { "type": "integer" }, "filesAfter": { "type": "integer" }, "limitBytes": { "type": "integer", "format": "int64" } } } } }
+          }
+        }
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Tail application logs",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 500 } },
+          { "name": "level", "in": "query", "schema": { "type": "string", "enum": ["debug","info","warn","error"] } }
+        ],
+        "responses": { "200": { "description": "Log lines array" } }
+      }
+    }
+  }
+}

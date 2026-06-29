@@ -2081,6 +2081,10 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 	mountAuthRoutes(r, userRepo)
 	mountUserRoutes(r, userRepo)
 
+	// OpenAPI spec and Scalar docs UI (public).
+	r.Get("/openapi.json", serveOpenAPISpec)
+	r.Get("/docs", serveScalarDocs)
+
 	// Serve the embedded SvelteKit SPA for all non-API routes, with SPA fallback.
 	r.Mount("/", frontend.Handler())
 	return r
@@ -2101,6 +2105,8 @@ func authMiddlewareFor(repo UserRepository) func(http.Handler) http.Handler {
 		"/dav/api",
 		"/api/sabnzbd/",
 		"/sabnzbd/",
+		"/openapi.json",
+		"/docs",
 	}
 	return auth.Middleware(repo, exempt)
 }
