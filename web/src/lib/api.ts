@@ -227,7 +227,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(s)
     }),
-  healthSummary: () => request<{ total: number; checked: number; healthy: number; neverChecked: number; consistencyIssues: number }>('/api/health/summary'),
+  healthSummary: () => request<{ total: number; checked: number; healthy: number; neverChecked: number; consistencyIssues: number; uncalibratedNZBFiles: number }>('/api/health/summary'),
   healthEntries: () => request<{ items: { id: number; libraryItemId: number; libraryPath: string; targetPath: string; createdAt: string; lastCheckedAt?: string; healthOk?: boolean }[] }>('/api/health/entries'),
   healthConsistency: () => request<{ items: { libraryItemId: number; title: string; mediaType: string; queueState: string }[] }>('/api/health/consistency'),
   runHealthCheck: () => request<{ checked: number; healthy: number }>('/api/health/check', { method: 'POST' }),

@@ -27,32 +27,42 @@
   let running: Record<string, boolean> = {};
   let results: Record<string, TaskResult> = {};
   let schedules: TaskSchedule[] = [];
-
-  const tasks: TaskDef[] = [
-    { id: 'seerr_sync', label: 'Sync Seerr Requests', description: 'Import new and updated requests from Seerr.', group: 'Indexing', interval: '10m', manual: true, run: async () => { const r = await api.syncRequests(); return `seen ${r.seen}, created ${r.created}`; } },
-    { id: 'pending_queue_push', label: 'Dispatch Pending Queue', description: 'Push pending library rows into the bounded background work queue.', group: 'Indexing', interval: '30s', manual: false, run: async () => '' },
-    { id: 'stale-queue-reset', label: 'Reset Stale Queue Items', description: 'Reset queue rows that have been stuck too long in transitional states.', group: 'Indexing', interval: '5m', manual: false, run: async () => '' },
-    { id: 'backlog_search', label: 'Backlog Search', description: 'Search missing library items — one search per show+season per batch, 1-hour cooldown per item. Same logic as Sonarr/Radarr.', group: 'Indexing', interval: '30m', manual: true, run: async () => { await api.searchPendingLibrary(); return 'started in background'; } },
-    { id: 'search_upgrades', label: 'Search Quality Upgrades', description: 'Re-search available items whose quality profile allows upgrades and replace them when a better release is found.', group: 'Indexing', interval: '6h', manual: true, run: async () => { await api.searchUpgrades(); return 'started in background'; } },
-    { id: 'retry_failed_queue', label: 'Retry Failed Queue', description: 'Retry failed queue rows using current fallback policy.', group: 'Indexing', interval: '15m', manual: true, run: async () => { const r = await api.retryFailedQueue(); return `processed ${r.processed}, retried ${r.retried}`; } },
-    { id: 'fill_missing_episodes', label: 'Fill Missing Episodes', description: 'Use TMDB episode lists to create library items for episodes not yet tracked, then queue them for search.', group: 'Indexing', interval: '6h', manual: true, run: async () => { const r = await api.fillMissingEpisodes(); return `processed ${r.showsProcessed} shows, found ${r.episodesFound} episodes, created ${r.itemsCreated} new items`; } },
-    { id: 'backfill_metadata', label: 'Backfill Metadata', description: 'Re-enrich movies and TV shows with new TMDB fields (tagline, status, content rating, release date, trailer).', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { const r = await api.backfillMetadata(); return `enriched ${r.enriched} items (movies: ${r.processedMovies}, shows: ${r.processedShows}, failed: ${r.failed})`; } },
-    { id: 'republish_pending', label: 'Republish Pending', description: 'Republish library items with a selected release but no current publication.', group: 'Publishing', interval: '30m', manual: true, run: async () => { await api.republishPendingLibrary(); return 'started in background'; } },
-    { id: 'reset_orphaned_available', label: 'Reset Orphaned Available Items', description: 'Reset available items with no symlink and no recoverable source back to pending so they are re-searched and re-downloaded.', group: 'Publishing', interval: '30m', manual: true, run: async () => { await api.resetOrphanedAvailableItems(); return 'started in background'; } },
-    { id: 'health_check', label: 'Symlink Health Check', description: 'Verify published symlinks still point to valid VFS targets. Runs every 15 minutes; also runs deep NZB article probe in background.', group: 'Maintenance', interval: '15m', manual: true, run: async () => { const r = await api.runHealthCheck(); return `checked ${r.checked}, healthy ${r.healthy}`; } },
-    { id: 'article_health_check', label: 'Article Health Check', description: 'Probe first NNTP segment of every direct-NZB item. Resets items with expired or missing articles.', group: 'Maintenance', interval: '6h', manual: false, run: async () => '' },
-    { id: 'nzb_health_check', label: 'Deep NZB Article Check', description: 'Full NNTP article scan — probes first/last segments for all published items and resets missing-article or sample-only publications.', group: 'Maintenance', interval: '168h', manual: false, run: async () => '' },
-    { id: 'library-cleanup', label: 'Library Cleanup', description: 'Remove orphaned VFS content, broken media symlinks, and stale history entries. Combines three maintenance passes into one.', group: 'Maintenance', interval: '6h', manual: false, run: async () => '' },
-    { id: 'cache_prune', label: 'Prune Block Cache', description: 'Delete oldest decoded articles from disk cache.', group: 'Maintenance', interval: '6h', manual: true, run: async () => { const r = await api.pruneCache(); return `deleted ${r.deletedFiles} files`; } }
-  ];
-
   let schedulesLoading = true;
+
+  // Task IDs match backend task scheduler IDs (internal/app/app.go ListTaskSchedules).
+  // "Operations" group = individually-triggerable via API, no corresponding scheduled entry.
+  const tasks: TaskDef[] = [
+    // === Indexing (automated) ===
+    { id: 'seerr_sync',        label: 'Sync Seerr Requests',   description: 'Import new and updated requests from Seerr.',                                                       group: 'Indexing',   interval: '10m',  manual: true,  run: async () => { const r = await api.syncRequests();        return `seen ${r.seen}, created ${r.created}`; } },
+    { id: 'pending_queue_push',label: 'Dispatch Pending Queue', description: 'Push pending library items into the bounded background work queue.',                                group: 'Indexing',   interval: '30s',  manual: false, run: async () => '' },
+    { id: 'hydra_recent_tv',   label: 'Recent TV Feed',         description: 'Fetch Hydra recent-TV RSS feed and index new TV releases.',                                         group: 'Indexing',   interval: 'RSS',  manual: false, run: async () => '' },
+    { id: 'hydra_recent_movie',label: 'Recent Movie Feed',      description: 'Fetch Hydra recent-movie RSS feed and index new movie releases.',                                   group: 'Indexing',   interval: 'RSS',  manual: false, run: async () => '' },
+    { id: 'queue_housekeeping',label: 'Queue Housekeeping',     description: 'Reset stuck/stale queue items then retry failed downloads. Runs every 10 min.',                    group: 'Indexing',   interval: '10m',  manual: false, run: async () => '' },
+    { id: 'backlog_search',    label: 'Backlog Search',         description: 'Search missing library items — one search per show+season per batch, 1-hour cooldown per item.',   group: 'Indexing',   interval: '30m',  manual: true,  run: async () => { await api.searchPendingLibrary();          return 'started in background'; } },
+    { id: 'content_maintenance',label: 'Content Maintenance',  description: 'Fill missing episode library items and run quality upgrade searches. Runs every 6 h.',              group: 'Indexing',   interval: '6h',   manual: false, run: async () => '' },
+    // === Publishing (automated) ===
+    { id: 'publishing_maintenance', label: 'Publishing Maintenance', description: 'Republish pending library items and reset orphaned available items. Runs every 30 min.',      group: 'Publishing', interval: '30m',  manual: false, run: async () => '' },
+    // === Maintenance (automated + manual) ===
+    { id: 'health_check',      label: 'Symlink Health Check',   description: 'Verify published symlinks still point to valid VFS targets.',                                       group: 'Maintenance',interval: '15m',  manual: true,  run: async () => { const r = await api.runHealthCheck();      return `checked ${r.checked}, healthy ${r.healthy}`; } },
+    { id: 'nzb_health_check',  label: 'Deep NZB Article Check', description: 'Full NNTP article scan — probes segments, resets missing-article or sample-only publications.',    group: 'Maintenance',interval: '168h', manual: false, run: async () => '' },
+    { id: 'article_health_check',label: 'Article Health Check', description: 'Probe first NNTP segment of every direct-NZB item. Resets items with expired or missing articles.',group: 'Maintenance',interval: '6h',   manual: false, run: async () => '' },
+    { id: 'storage_maintenance',label: 'Storage Maintenance',   description: 'Remove orphaned VFS content, broken media symlinks, and prune the block cache. Runs every 6 h.',   group: 'Maintenance',interval: '6h',   manual: false, run: async () => '' },
+    // === Operations (individually-triggered via API) ===
+    { id: 'retry_failed_queue',       label: 'Retry Failed Queue',          description: 'Immediately retry all failed queue items using current fallback policy.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.retryFailedQueue();          return `processed ${r.processed}, retried ${r.retried}`; } },
+    { id: 'search_upgrades',          label: 'Search Quality Upgrades',     description: 'Re-search available items whose quality profile allows a better release.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.searchUpgrades();                       return 'started in background'; } },
+    { id: 'fill_missing_episodes',    label: 'Fill Missing Episodes',       description: 'Use TMDB episode lists to create library items for episodes not yet tracked.',           group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.fillMissingEpisodes();        return `processed ${r.showsProcessed} shows, created ${r.itemsCreated} new items`; } },
+    { id: 'republish_pending',        label: 'Republish Pending',           description: 'Republish library items with a selected release but no current symlink.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.republishPendingLibrary();               return 'started in background'; } },
+    { id: 'reset_orphaned_available', label: 'Reset Orphaned Available',    description: 'Reset available items with no symlink back to pending for re-search.',                  group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.resetOrphanedAvailableItems();           return 'started in background'; } },
+    { id: 'cache_prune',              label: 'Prune Block Cache',           description: 'Delete oldest decoded articles from the disk cache.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pruneCache();                  return `deleted ${r.deletedFiles} files`; } },
+    { id: 'backfill_metadata',        label: 'Backfill Metadata',           description: 'Re-enrich movies and TV shows with new TMDB fields.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.backfillMetadata();            return `enriched ${r.enriched} items`; } },
+    { id: 'seerr_push_library',       label: 'Push Library to Seerr',       description: 'Push library items missing from Seerr as new requests.',                               group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pushMissingToSeerr();          return `movies ${r.moviesPushed}, shows ${r.showsPushed}`; } },
+  ];
 
   async function loadSchedules() {
     try {
       schedules = (await api.taskSchedules()).items ?? [];
     } catch {
-      // silently ignore — UI shows "—" when schedules unavailable
+      // silently ignore — UI shows static intervals when unavailable
     } finally {
       schedulesLoading = false;
     }
@@ -83,16 +93,18 @@
     return schedules.find((item) => item.id === task.id);
   }
 
-  $: groups = [...new Set(tasks.map((task) => task.group))];
+  $: groups = [...new Set(tasks.map((t) => t.group))];
   $: runningCount = Object.values(running).filter(Boolean).length;
   $: lastRunCount = Object.keys(results).length;
+  $: automatedCount = tasks.filter((t) => t.group !== 'Operations').length;
+  $: operationsCount = tasks.filter((t) => t.group === 'Operations').length;
 
-  // Map SSE event kinds to human-readable task completion messages.
+  // SSE event kinds from manual task triggers
   const backgroundKinds: Record<string, (e: Record<string, unknown>) => string> = {
-    'library.republish_pending': (e) => `Republish Pending complete: processed ${e.processed}, republished ${e.republished}, failed ${e.failed}`,
-    'library.reset_orphaned': (e) => `Reset Orphaned complete: found ${e.found}, reset ${e.reset}, failed ${e.failed}`,
-    'library.search_pending': (e) => `Search Pending complete: processed ${e.processed}, searched ${e.searched}, selected ${e.selected}`,
-    'library.search_upgrades': (e) => `Search Upgrades complete: checked ${e.checked}, upgraded ${e.upgraded}, failed ${e.failed}`,
+    'library.republish_pending': (e) => `Republish Pending: processed ${e.processed}, republished ${e.republished}`,
+    'library.reset_orphaned':    (e) => `Reset Orphaned: found ${e.found}, reset ${e.reset}`,
+    'library.search_pending':    (e) => `Search Pending: searched ${e.searched}, selected ${e.selected}`,
+    'library.search_upgrades':   (e) => `Search Upgrades: checked ${e.checked}, upgraded ${e.upgraded}`,
   };
 
   onMount(() => {
@@ -112,23 +124,23 @@
 
 <svelte:head><title>Tasks — Drakkar</title></svelte:head>
 
-<PageHeader title="Tasks" subtitle="Scheduled-job style control plane for indexing, publishing, and maintenance work.">
+<PageHeader title="Tasks" subtitle="Scheduled-job control plane for indexing, publishing, and maintenance work.">
   <StatusPill tone="neutral">{tasks.length} tasks</StatusPill>
   <StatusPill tone={runningCount > 0 ? 'warn' : 'ok'}>{runningCount} running</StatusPill>
 </PageHeader>
 
 <section class="summary-grid">
   <div class="summary-card">
-    <div class="summary-value">{tasks.filter((task) => task.group === 'Indexing').length}</div>
-    <div class="summary-label">Indexing tasks</div>
+    <div class="summary-value">{automatedCount}</div>
+    <div class="summary-label">Automated schedules</div>
   </div>
   <div class="summary-card">
-    <div class="summary-value">{tasks.filter((task) => task.group === 'Publishing').length}</div>
-    <div class="summary-label">Publishing tasks</div>
+    <div class="summary-value">{operationsCount}</div>
+    <div class="summary-label">Manual operations</div>
   </div>
   <div class="summary-card">
-    <div class="summary-value">{tasks.filter((task) => task.group === 'Maintenance').length}</div>
-    <div class="summary-label">Maintenance tasks</div>
+    <div class="summary-value {runningCount > 0 ? 'running' : ''}">{runningCount}</div>
+    <div class="summary-label">Currently running</div>
   </div>
   <div class="summary-card">
     <div class="summary-value">{lastRunCount}</div>
@@ -136,7 +148,7 @@
   </div>
 </section>
 
-<Panel title="Scheduled" subtitle="Reference-style scheduled tasks table, backed by current callable operations.">
+<Panel title="Scheduled Tasks" subtitle="Automated tasks driven by the backend scheduler. IDs match live schedule state.">
   <div class="table-wrap">
     <table>
       <thead>
@@ -144,7 +156,7 @@
           <th>Name</th>
           <th>Interval</th>
           <th>Status</th>
-          <th>Last Execution</th>
+          <th>Last Run</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -153,7 +165,7 @@
           <tr class="group-row">
             <td colspan="5">{group}</td>
           </tr>
-          {#each tasks.filter((task) => task.group === group) as task}
+          {#each tasks.filter((t) => t.group === group) as task}
             {@const busy = running[task.id]}
             {@const result = results[task.id]}
             {@const schedule = scheduleFor(task)}
@@ -187,8 +199,6 @@
                   <span class="time-cell"><Clock3 size={12} /> {fmtTime(result.ranAt)}</span>
                 {:else if schedule?.lastRunAt}
                   <span class="time-cell"><Clock3 size={12} /> {fmtTime(schedule.lastRunAt)}</span>
-                {:else if schedulesLoading}
-                  <span class="time-cell dim">—</span>
                 {:else}
                   <span class="time-cell dim">Never</span>
                 {/if}
@@ -231,6 +241,10 @@
     font-size: 2rem;
     font-weight: 700;
     line-height: 1;
+  }
+
+  .summary-value.running {
+    color: hsl(47 100% 77%);
   }
 
   .summary-label,
@@ -295,7 +309,7 @@
     font-family: 'JetBrains Mono', monospace;
   }
 
-  .result.ok { color: hsl(141 80% 68%); }
+  .result.ok   { color: hsl(141 80% 68%); }
   .result.fail { color: hsl(0 96% 82%); }
 
   .time-cell {

@@ -39,7 +39,7 @@
   import { api, subscribeEvents } from '$lib/api';
   import { bytes, dateTime } from '$lib/format';
   import { toastError, toastSuccess } from '$lib/toast';
-  import type { BlocklistItem, BlocklistMutation, BlockTestResult, CustomFormat, FullSettings, IndexerPolicy, IntegrationProbeReport, MaintenanceResult, PolicySettings, QualityDefinition, QualityProfile, ReleaseBlockRule, Status, SubtitleProfile, TaskSchedule, UsenetProvider } from '$lib/types';
+  import type { BlocklistItem, BlocklistMutation, BlockTestResult, CustomFormat, FullSettings, IndexerPolicy, IntegrationProbeReport, PolicySettings, QualityDefinition, QualityProfile, ReleaseBlockRule, Status, SubtitleProfile, TaskSchedule, UsenetProvider } from '$lib/types';
 
   type SettingsTab = 'integrations' | 'providers' | 'indexers' | 'queue' | 'library' | 'rules' | 'quality' | 'formats' | 'filtering' | 'subtitle-profiles' | 'notifications' | 'logs' | 'tasks' | 'media-players' | 'system';
 
@@ -82,7 +82,7 @@
   let qualityDefsSaving: Set<number> = new Set();
   let qualitySubTab: 'profiles' | 'definitions' = 'profiles';
   let policySettings: PolicySettings | null = null;
-  let lastMaintenance: MaintenanceResult | null = null;
+
   let lastCachePrune: { root: string; filesBefore: number; filesAfter: number; bytesBefore: number; bytesAfter: number; deletedFiles: number; deletedBytes: number; limitBytes: number } | null = null;
   let activeTab: SettingsTab = 'integrations';
 
@@ -123,12 +123,34 @@
 
   // ── Seerr webhook ───────────────────────────────────────────────────────────
   let webhookCopied = false;
+  let webhookTokenCopied = false;
+  let webhookToken: string | null = null;
+  let webhookTokenCreating = false;
   $: webhookUrl = (typeof window !== 'undefined' ? window.location.origin : '') + '/api/webhooks/seerr';
 
   async function copyWebhookUrl() {
     await navigator.clipboard.writeText(webhookUrl);
     webhookCopied = true;
     setTimeout(() => { webhookCopied = false; }, 2000);
+  }
+
+  async function createWebhookToken() {
+    webhookTokenCreating = true;
+    try {
+      const result = await api.createApiToken('seerr-webhook');
+      webhookToken = result.token;
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      webhookTokenCreating = false;
+    }
+  }
+
+  async function copyWebhookToken() {
+    if (!webhookToken) return;
+    await navigator.clipboard.writeText(webhookToken);
+    webhookTokenCopied = true;
+    setTimeout(() => { webhookTokenCopied = false; }, 2000);
   }
 
   // ── Logs tab state ──────────────────────────────────────────────────────────
@@ -172,23 +194,32 @@
   let taskSchedules: TaskSchedule[] = [];
   let taskSchedulesLoading = true;
 
+  // Task IDs match backend task scheduler IDs (internal/app/app.go ListTaskSchedules).
   const taskDefs: TaskDef[] = [
-    { id: 'seerr_sync', label: 'Sync Seerr Requests', description: 'Import new and updated requests from Seerr.', group: 'Indexing', interval: '10m', manual: true, run: async () => { const r = await api.syncRequests(); return `seen ${r.seen}, created ${r.created}`; } },
-    { id: 'seerr_push_library', label: 'Push Library to Seerr', description: 'Push library items that are missing from Seerr as new requests.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { const r = await api.pushMissingToSeerr(); return `movies pushed ${r.moviesPushed}, shows pushed ${r.showsPushed}`; } },
-    { id: 'pending_queue_push', label: 'Dispatch Pending Queue', description: 'Push pending library rows into the bounded background work queue.', group: 'Indexing', interval: '30s', manual: false, run: async () => '' },
-    { id: 'stale-queue-reset', label: 'Reset Stale Queue Items', description: 'Reset queue rows that have been stuck too long in transitional states.', group: 'Indexing', interval: '5m', manual: false, run: async () => '' },
-    { id: 'backlog_search', label: 'Backlog Search', description: 'Search missing library items — one search per show+season per batch, 1-hour cooldown per item.', group: 'Indexing', interval: '30m', manual: true, run: async () => { await api.searchPendingLibrary(); return 'started in background'; } },
-    { id: 'search_upgrades', label: 'Search Quality Upgrades', description: 'Re-search available items whose quality profile allows upgrades and replace them when a better release is found.', group: 'Indexing', interval: '6h', manual: true, run: async () => { await api.searchUpgrades(); return 'started in background'; } },
-    { id: 'retry_failed_queue', label: 'Retry Failed Queue', description: 'Retry failed queue rows using current fallback policy.', group: 'Indexing', interval: '15m', manual: true, run: async () => { const r = await api.retryFailedQueue(); return `processed ${r.processed}, retried ${r.retried}`; } },
-    { id: 'fill_missing_episodes', label: 'Fill Missing Episodes', description: 'Use TMDB episode lists to create library items for episodes not yet tracked, then queue them for search.', group: 'Indexing', interval: '6h', manual: true, run: async () => { const r = await api.fillMissingEpisodes(); return `processed ${r.showsProcessed} shows, found ${r.episodesFound} episodes, created ${r.itemsCreated} new items`; } },
-    { id: 'backfill_metadata', label: 'Backfill Metadata', description: 'Re-enrich movies and TV shows with new TMDB fields.', group: 'Indexing', interval: 'Manual', manual: true, run: async () => { const r = await api.backfillMetadata(); return `enriched ${r.enriched} items`; } },
-    { id: 'republish_pending', label: 'Republish Pending', description: 'Republish library items with a selected release but no current publication.', group: 'Publishing', interval: '30m', manual: true, run: async () => { await api.republishPendingLibrary(); return 'started in background'; } },
-    { id: 'reset_orphaned_available', label: 'Reset Orphaned Available Items', description: 'Reset available items with no symlink and no recoverable source back to pending so they are re-searched and re-downloaded.', group: 'Publishing', interval: '30m', manual: true, run: async () => { await api.resetOrphanedAvailableItems(); return 'started in background'; } },
-    { id: 'health_check', label: 'Symlink Health Check', description: 'Verify published symlinks still point to valid VFS targets. Also runs deep NZB article probe in background.', group: 'Maintenance', interval: '15m', manual: true, run: async () => { const r = await api.runHealthCheck(); return `checked ${r.checked}, healthy ${r.healthy}`; } },
-    { id: 'article_health_check', label: 'Article Health Check', description: 'Probe first NNTP segment of every direct-NZB item. Resets items with expired or missing articles.', group: 'Maintenance', interval: '6h', manual: false, run: async () => '' },
-    { id: 'nzb_health_check', label: 'Deep NZB Article Check', description: 'Full NNTP article scan — probes first/last segments for all published items and resets missing-article or sample-only publications.', group: 'Maintenance', interval: '168h', manual: false, run: async () => '' },
-    { id: 'library-cleanup', label: 'Library Cleanup', description: 'Remove orphaned VFS content, broken media symlinks, and stale history entries.', group: 'Maintenance', interval: '6h', manual: false, run: async () => '' },
-    { id: 'cache_prune', label: 'Prune Block Cache', description: 'Delete oldest decoded articles from disk cache.', group: 'Maintenance', interval: '6h', manual: true, run: async () => { const r = await api.pruneCache(); return `deleted ${r.deletedFiles} files`; } }
+    // === Indexing (automated) ===
+    { id: 'seerr_sync',          label: 'Sync Seerr Requests',   description: 'Import new and updated requests from Seerr.',                                                      group: 'Indexing',   interval: '10m',  manual: true,  run: async () => { const r = await api.syncRequests();        return `seen ${r.seen}, created ${r.created}`; } },
+    { id: 'pending_queue_push',  label: 'Dispatch Pending Queue', description: 'Push pending library items into the bounded background work queue.',                               group: 'Indexing',   interval: '30s',  manual: false, run: async () => '' },
+    { id: 'hydra_recent_tv',     label: 'Recent TV Feed',         description: 'Fetch Hydra recent-TV RSS feed and index new TV releases.',                                        group: 'Indexing',   interval: 'RSS',  manual: false, run: async () => '' },
+    { id: 'hydra_recent_movie',  label: 'Recent Movie Feed',      description: 'Fetch Hydra recent-movie RSS feed and index new movie releases.',                                  group: 'Indexing',   interval: 'RSS',  manual: false, run: async () => '' },
+    { id: 'queue_housekeeping',  label: 'Queue Housekeeping',     description: 'Reset stuck/stale queue items then retry failed downloads. Runs every 10 min.',                   group: 'Indexing',   interval: '10m',  manual: false, run: async () => '' },
+    { id: 'backlog_search',      label: 'Backlog Search',         description: 'Search missing library items — one search per show+season per batch, 1-hour cooldown per item.',  group: 'Indexing',   interval: '30m',  manual: true,  run: async () => { await api.searchPendingLibrary();          return 'started in background'; } },
+    { id: 'content_maintenance', label: 'Content Maintenance',    description: 'Fill missing episode library items and run quality upgrade searches. Runs every 6 h.',             group: 'Indexing',   interval: '6h',   manual: false, run: async () => '' },
+    // === Publishing (automated) ===
+    { id: 'publishing_maintenance', label: 'Publishing Maintenance', description: 'Republish pending library items and reset orphaned available items. Runs every 30 min.',       group: 'Publishing', interval: '30m',  manual: false, run: async () => '' },
+    // === Maintenance (automated + manual) ===
+    { id: 'health_check',        label: 'Symlink Health Check',   description: 'Verify published symlinks still point to valid VFS targets.',                                      group: 'Maintenance',interval: '15m',  manual: true,  run: async () => { const r = await api.runHealthCheck();      return `checked ${r.checked}, healthy ${r.healthy}`; } },
+    { id: 'nzb_health_check',    label: 'Deep NZB Article Check', description: 'Full NNTP article scan — probes segments, resets missing-article or sample-only publications.',   group: 'Maintenance',interval: '168h', manual: false, run: async () => '' },
+    { id: 'article_health_check',label: 'Article Health Check',   description: 'Probe first NNTP segment of every direct-NZB item. Resets items with expired or missing articles.',group:'Maintenance',interval: '6h',   manual: false, run: async () => '' },
+    { id: 'storage_maintenance', label: 'Storage Maintenance',    description: 'Remove orphaned VFS content, broken media symlinks, and prune the block cache. Runs every 6 h.',  group: 'Maintenance',interval: '6h',   manual: false, run: async () => '' },
+    // === Operations (individually-triggered via API) ===
+    { id: 'retry_failed_queue',       label: 'Retry Failed Queue',       description: 'Immediately retry all failed queue items using current fallback policy.',                  group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.retryFailedQueue();          return `processed ${r.processed}, retried ${r.retried}`; } },
+    { id: 'search_upgrades',          label: 'Search Quality Upgrades',  description: 'Re-search available items whose quality profile allows a better release.',                  group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.searchUpgrades();                       return 'started in background'; } },
+    { id: 'fill_missing_episodes',    label: 'Fill Missing Episodes',    description: 'Use TMDB episode lists to create library items for episodes not yet tracked.',              group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.fillMissingEpisodes();        return `processed ${r.showsProcessed} shows, created ${r.itemsCreated} new items`; } },
+    { id: 'republish_pending',        label: 'Republish Pending',        description: 'Republish library items with a selected release but no current symlink.',                  group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.republishPendingLibrary();               return 'started in background'; } },
+    { id: 'reset_orphaned_available', label: 'Reset Orphaned Available', description: 'Reset available items with no symlink back to pending for re-search.',                     group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.resetOrphanedAvailableItems();           return 'started in background'; } },
+    { id: 'cache_prune',              label: 'Prune Block Cache',        description: 'Delete oldest decoded articles from the disk cache.',                                      group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pruneCache();                  return `deleted ${r.deletedFiles} files`; } },
+    { id: 'backfill_metadata',        label: 'Backfill Metadata',        description: 'Re-enrich movies and TV shows with new TMDB fields.',                                      group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.backfillMetadata();            return `enriched ${r.enriched} items`; } },
+    { id: 'seerr_push_library',       label: 'Push Library to Seerr',    description: 'Push library items missing from Seerr as new requests.',                                  group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pushMissingToSeerr();          return `movies ${r.moviesPushed}, shows ${r.showsPushed}`; } },
   ];
 
   async function loadTaskSchedules() {
@@ -781,17 +812,8 @@
     return parts.join(' • ');
   }
 
-  async function runMaintenance(task: 'orphaned-content' | 'broken-media-symlinks' | 'orphaned-completed-symlinks') {
-    working = true;
-    try {
-      lastMaintenance = await api.maintenance(task);
-      toastSuccess(`${lastMaintenance.taskName} completed`);
-    } catch (e) {
-      toastError(e instanceof Error ? e.message : String(e));
-    } finally {
-      working = false;
-    }
-  }
+  // Orphaned-content / broken-symlink cleanup is now handled automatically by the
+  // storage_maintenance scheduled task (every 6h). No individual API endpoints remain.
 
   async function pruneCache() {
     working = true;
@@ -965,6 +987,10 @@
                   <code>Request Approved</code>, <code>Request Auto-Approved</code>
                 </li>
                 <li>Leave <strong>JSON Payload</strong> at its default (Seerr standard format)</li>
+                <li>
+                  <strong>(Optional)</strong> Generate a Bearer token below and add it as an
+                  <code>Authorization</code> header in Seerr's webhook settings for extra security
+                </li>
                 <li>Save and use <strong>Test</strong> to verify the connection</li>
               </ol>
               <div class="webhook-url-row">
@@ -976,6 +1002,22 @@
                     <Copy size={14} />
                   {/if}
                 </button>
+              </div>
+              <div class="webhook-token-section">
+                <div class="webhook-token-label">Bearer token (optional)</div>
+                {#if webhookToken}
+                  <p class="webhook-token-hint">Copy this token now — it will not be shown again.</p>
+                  <div class="webhook-url-row">
+                    <code class="webhook-url">{webhookToken}</code>
+                    <button class="copy-btn" on:click={copyWebhookToken} title="Copy token">
+                      {#if webhookTokenCopied}<Check size={14} />{:else}<Copy size={14} />{/if}
+                    </button>
+                  </div>
+                {:else}
+                  <button class="copy-btn copy-btn--generate" on:click={createWebhookToken} disabled={webhookTokenCreating}>
+                    {webhookTokenCreating ? 'Generating…' : 'Generate API Token'}
+                  </button>
+                {/if}
               </div>
             </div>
           </Panel>
@@ -1714,30 +1756,8 @@
               <Wrench size={16} />
               Prune Block Cache
             </Button>
-            <Button kind="secondary" on:click={() => runMaintenance('orphaned-content')} disabled={loading || working}>
-              <Wrench size={16} />
-              Remove Orphaned Content
-            </Button>
-            <Button kind="secondary" on:click={() => runMaintenance('broken-media-symlinks')} disabled={loading || working}>
-              <Wrench size={16} />
-              Remove Broken Symlinks
-            </Button>
-            <Button kind="secondary" on:click={() => runMaintenance('orphaned-completed-symlinks')} disabled={loading || working}>
-              <Wrench size={16} />
-              Remove Orphaned Completed
-            </Button>
           </div>
-          {#if lastMaintenance}
-            <div class="result-box">
-              <strong>{lastMaintenance.taskName}</strong>
-              <div class="result-grid mono">
-                <span>scanned files: {lastMaintenance.scannedFiles}</span>
-                <span>scanned rows: {lastMaintenance.scannedRows}</span>
-                <span>deleted files: {lastMaintenance.deletedFiles}</span>
-                <span>deleted rows: {lastMaintenance.deletedRows}</span>
-              </div>
-            </div>
-          {/if}
+          <p class="maint-note">Orphaned VFS content, broken symlinks, and completed orphans are cleaned automatically by the <strong>Storage Maintenance</strong> scheduled task (every 6 h). Run it from the Tasks tab for an immediate pass.</p>
           {#if lastCachePrune}
             <div class="result-box">
               <strong>cache-prune</strong>
@@ -3265,8 +3285,44 @@
   }
   .copy-btn:hover { background: hsl(0 0% 100% / 0.1); color: hsl(var(--foreground)); }
 
+  .webhook-token-section {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid hsl(0 0% 100% / 0.06);
+  }
+
+  .webhook-token-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: hsl(var(--muted-foreground));
+    margin-bottom: 8px;
+  }
+
+  .webhook-token-hint {
+    font-size: 12px;
+    color: hsl(47 100% 77%);
+    margin: 0 0 8px;
+  }
+
+  .copy-btn--generate {
+    padding: 6px 14px;
+    font-size: 13px;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .copy-btn--generate:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   /* maintenance */
   .maint-list { display: grid; gap: 10px; margin-bottom: 14px; }
+  .maint-note { font-size: 13px; color: hsl(var(--muted-foreground)); margin: 8px 0 0; line-height: 1.5; }
   .result-box {
     margin-top: 14px;
     padding: 12px 14px;
