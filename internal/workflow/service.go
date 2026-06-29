@@ -1397,6 +1397,11 @@ func (s *Service) RetryFailedQueue(ctx context.Context) (BulkQueueRetryResult, e
 		// Fall back to the hardcoded recovery matrix for failure reasons
 		// that have no user-configured policy entry.
 		action := policy.DecideFromReason(target.FailureReason)
+		// Escalate ActionRetryLater to blocklist+search after 3 failures on the
+		// same candidate, preventing an infinite throttle-retry loop.
+		if action == policy.ActionRetryLater && target.CandidateFailureCount >= 3 {
+			action = policy.ActionBlocklistAndSearch
+		}
 		switch action {
 		case policy.ActionBlocklistAndSearch:
 			if hydraCallCount >= maxHydraCalls {
@@ -1416,7 +1421,7 @@ func (s *Service) RetryFailedQueue(ctx context.Context) (BulkQueueRetryResult, e
 		case policy.ActionDoNothing:
 			continue
 		default:
-			// ActionSearchAgain, ActionRetryLater → standard retry flow.
+			// ActionSearchAgain, ActionRetryLater (under cap) → standard retry flow.
 		}
 
 		isRestartInterruption := strings.Contains(strings.ToLower(target.FailureReason), "interrupted_by_restart") ||
@@ -2426,7 +2431,7 @@ func isSoftCandidateFailureReason(reason string) bool {
 	if reason == "" {
 		return false
 	}
-	if strings.Contains(reason, "interrupted_by_restart") || strings.Contains(reason, "stale_worker") || strings.Contains(reason, "status 403") {
+	if strings.Contains(reason, "interrupted_by_restart") || strings.Contains(reason, "stale_worker") || strings.Contains(reason, "status 403") || strings.Contains(reason, "status 430") {
 		return true
 	}
 	if isRetryablePreflightCandidateReason(reason) {
