@@ -1222,12 +1222,15 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.PushMissingLibraryItemsToSeerr(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		respondJSON(w, http.StatusOK, result)
+		go func() {
+			result, err := workflowSvc.PushMissingLibraryItemsToSeerr(context.Background())
+			if err != nil {
+				slog.Error("push missing to seerr background", "err", err)
+				return
+			}
+			publishMutation("library.push_library", map[string]any{"moviesPushed": result.MoviesPushed, "showsPushed": result.ShowsPushed, "moviesSkipped": result.MoviesSkipped, "showsSkipped": result.ShowsSkipped})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/requests/sync-plex-detected", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {
@@ -1494,50 +1497,60 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.BackfillMetadata(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := workflowSvc.BackfillMetadata(context.Background())
+			if err != nil {
+				slog.Error("backfill metadata background", "err", err)
+				return
+			}
+			publishMutation("library.backfill_metadata", map[string]any{"processedMovies": result.ProcessedMovies, "processedShows": result.ProcessedShows, "enriched": result.Enriched, "failed": result.Failed})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/library/fill-missing-episodes", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
 			return
 		}
-		result, err := workflowSvc.FillMissingEpisodes(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := workflowSvc.FillMissingEpisodes(context.Background())
+			if err != nil {
+				slog.Error("fill missing episodes background", "err", err)
+				return
+			}
+			publishMutation("library.fill_missing_episodes", map[string]any{"showsProcessed": result.ShowsProcessed, "episodesFound": result.EpisodesFound, "itemsCreated": result.ItemsCreated})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/cache/prune", func(w http.ResponseWriter, r *http.Request) {
 		if cacheSvc == nil {
 			respondError(w, http.StatusNotImplemented, errors.New("cache pruning unavailable"))
 			return
 		}
-		result, err := cacheSvc.Prune(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		publishMutation("cache.prune", map[string]any{"deletedFiles": result.DeletedFiles, "deletedBytes": result.DeletedBytes})
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := cacheSvc.Prune(context.Background())
+			if err != nil {
+				slog.Error("cache prune background", "err", err)
+				return
+			}
+			publishMutation("cache.prune", map[string]any{"deletedFiles": result.DeletedFiles, "deletedBytes": result.DeletedBytes})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Post("/api/maintenance/nzb-health-check", func(w http.ResponseWriter, r *http.Request) {
 		if maintenance == nil {
 			respondError(w, http.StatusNotImplemented, errors.New("maintenance unavailable"))
 			return
 		}
-		result, err := maintenance.DeepNZBHealthCheck(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		publishMutation("maintenance.nzb_health_check", map[string]any{"scannedRows": result.ScannedRows, "resetItems": result.ResetItems})
-		respondJSON(w, http.StatusAccepted, result)
+		go func() {
+			result, err := maintenance.DeepNZBHealthCheck(context.Background())
+			if err != nil {
+				slog.Error("nzb health check background", "err", err)
+				return
+			}
+			publishMutation("maintenance.nzb_health_check", map[string]any{"scannedRows": result.ScannedRows, "resetItems": result.ResetItems})
+		}()
+		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
 	r.Get("/api/events", broker.ServeHTTP)
 	r.Get("/api/health/summary", func(w http.ResponseWriter, r *http.Request) {

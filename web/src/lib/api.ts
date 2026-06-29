@@ -142,7 +142,7 @@ export const api = {
   },
   blocklistStats: () => request<{ total: number; active: number; expired: number; byReason: Record<string, number> }>('/api/blocklist/stats'),
   syncRequests: () => request<{ seen: number; created: number }>('/api/requests/sync', { method: 'POST' }),
-  pushMissingToSeerr: () => request<{ moviesPushed: number; showsPushed: number; moviesSkipped: number; showsSkipped: number }>('/api/requests/push-library', { method: 'POST' }),
+  pushMissingToSeerr: () => request<{ queued: boolean }>('/api/requests/push-library', { method: 'POST' }),
   searchPendingLibrary: () => request<BulkSearchResult>('/api/library/search-pending', { method: 'POST' }),
   searchUpgrades: () => request<{ checked: number; upgraded: number; failed: number }>('/api/library/search-upgrades', { method: 'POST' }),
   searchLibrary: (libraryItemID: number) =>
@@ -171,7 +171,7 @@ export const api = {
     request<{ releaseCandidateId: number; action: string; selectedReleaseId?: number }>(`/api/releases/${releaseCandidateID}/skip`, { method: 'POST' }),
   nzbHealthCheck: () =>
     request<MaintenanceResult>('/api/maintenance/nzb-health-check', { method: 'POST' }),
-  pruneCache: () => request<{ root: string; filesBefore: number; filesAfter: number; bytesBefore: number; bytesAfter: number; deletedFiles: number; deletedBytes: number; limitBytes: number }>('/api/cache/prune', { method: 'POST' }),
+  pruneCache: () => request<{ queued: boolean }>('/api/cache/prune', { method: 'POST' }),
   clearBlocklist: (id: number) => request<{ status: string; blocklistItemId: number }>(`/api/blocklist/${id}`, { method: 'DELETE' }),
   clearAllBlocklist: () => request<{ cleared: number }>('/api/blocklist', { method: 'DELETE' }),
   clearBlocklistByReason: (reason: string) => request<{ cleared: number }>(`/api/blocklist?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' }),
@@ -231,8 +231,8 @@ export const api = {
   healthEntries: () => request<{ items: { id: number; libraryItemId: number; libraryPath: string; targetPath: string; createdAt: string; lastCheckedAt?: string; healthOk?: boolean }[] }>('/api/health/entries'),
   healthConsistency: () => request<{ items: { libraryItemId: number; title: string; mediaType: string; queueState: string }[] }>('/api/health/consistency'),
   runHealthCheck: () => request<{ checked: number; healthy: number }>('/api/health/check', { method: 'POST' }),
-  backfillMetadata: () => request<{ processedMovies: number; processedShows: number; enriched: number; failed: number }>('/api/library/backfill-metadata', { method: 'POST' }),
-  fillMissingEpisodes: () => request<{ showsProcessed: number; episodesFound: number; itemsCreated: number }>('/api/library/fill-missing-episodes', { method: 'POST' }),
+  backfillMetadata: () => request<{ queued: boolean }>('/api/library/backfill-metadata', { method: 'POST' }),
+  fillMissingEpisodes: () => request<{ queued: boolean }>('/api/library/fill-missing-episodes', { method: 'POST' }),
   logs: (opts?: { limit?: number; level?: string }) => {
     const params = new URLSearchParams();
     if (opts?.limit) params.set('limit', String(opts.limit));

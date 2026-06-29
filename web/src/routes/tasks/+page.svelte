@@ -50,12 +50,12 @@
     // === Operations (individually-triggered via API) ===
     { id: 'retry_failed_queue',       label: 'Retry Failed Queue',          description: 'Immediately retry all failed queue items using current fallback policy.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.retryFailedQueue();          return `processed ${r.processed}, retried ${r.retried}`; } },
     { id: 'search_upgrades',          label: 'Search Quality Upgrades',     description: 'Re-search available items whose quality profile allows a better release.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.searchUpgrades();                       return 'started in background'; } },
-    { id: 'fill_missing_episodes',    label: 'Fill Missing Episodes',       description: 'Use TMDB episode lists to create library items for episodes not yet tracked.',           group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.fillMissingEpisodes();        return `processed ${r.showsProcessed} shows, created ${r.itemsCreated} new items`; } },
+    { id: 'fill_missing_episodes',    label: 'Fill Missing Episodes',       description: 'Use TMDB episode lists to create library items for episodes not yet tracked.',           group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.fillMissingEpisodes();        return 'started in background'; } },
     { id: 'republish_pending',        label: 'Republish Pending',           description: 'Republish library items with a selected release but no current symlink.',               group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.republishPendingLibrary();               return 'started in background'; } },
     { id: 'reset_orphaned_available', label: 'Reset Orphaned Available',    description: 'Reset available items with no symlink back to pending for re-search.',                  group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.resetOrphanedAvailableItems();           return 'started in background'; } },
-    { id: 'cache_prune',              label: 'Prune Block Cache',           description: 'Delete oldest decoded articles from the disk cache.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pruneCache();                  return `deleted ${r.deletedFiles} files`; } },
-    { id: 'backfill_metadata',        label: 'Backfill Metadata',           description: 'Re-enrich movies and TV shows with new TMDB fields.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.backfillMetadata();            return `enriched ${r.enriched} items`; } },
-    { id: 'seerr_push_library',       label: 'Push Library to Seerr',       description: 'Push library items missing from Seerr as new requests.',                               group: 'Operations', interval: '—',    manual: true,  run: async () => { const r = await api.pushMissingToSeerr();          return `movies ${r.moviesPushed}, shows ${r.showsPushed}`; } },
+    { id: 'cache_prune',              label: 'Prune Block Cache',           description: 'Delete oldest decoded articles from the disk cache.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.pruneCache();                  return 'started in background'; } },
+    { id: 'backfill_metadata',        label: 'Backfill Metadata',           description: 'Re-enrich movies and TV shows with new TMDB fields.',                                   group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.backfillMetadata();            return 'started in background'; } },
+    { id: 'seerr_push_library',       label: 'Push Library to Seerr',       description: 'Push library items missing from Seerr as new requests.',                               group: 'Operations', interval: '—',    manual: true,  run: async () => { await api.pushMissingToSeerr();          return 'started in background'; } },
   ];
 
   async function loadSchedules() {
@@ -101,10 +101,15 @@
 
   // SSE event kinds from manual task triggers
   const backgroundKinds: Record<string, (e: Record<string, unknown>) => string> = {
-    'library.republish_pending': (e) => `Republish Pending: processed ${e.processed}, republished ${e.republished}`,
-    'library.reset_orphaned':    (e) => `Reset Orphaned: found ${e.found}, reset ${e.reset}`,
-    'library.search_pending':    (e) => `Search Pending: searched ${e.searched}, selected ${e.selected}`,
-    'library.search_upgrades':   (e) => `Search Upgrades: checked ${e.checked}, upgraded ${e.upgraded}`,
+    'library.republish_pending':    (e) => `Republish Pending: processed ${e.processed}, republished ${e.republished}`,
+    'library.reset_orphaned':       (e) => `Reset Orphaned: found ${e.found}, reset ${e.reset}`,
+    'library.search_pending':       (e) => `Search Pending: searched ${e.searched}, selected ${e.selected}`,
+    'library.search_upgrades':      (e) => `Search Upgrades: checked ${e.checked}, upgraded ${e.upgraded}`,
+    'library.push_library':         (e) => `Push to Seerr: movies ${e.moviesPushed}, shows ${e.showsPushed}`,
+    'library.backfill_metadata':    (e) => `Backfill Metadata: enriched ${e.enriched} items`,
+    'library.fill_missing_episodes':(e) => `Fill Episodes: processed ${e.showsProcessed} shows, created ${e.itemsCreated} items`,
+    'cache.prune':                  (e) => `Cache Prune: deleted ${e.deletedFiles} files`,
+    'maintenance.nzb_health_check': (e) => `NZB Health Check: scanned ${e.scannedRows}, reset ${e.resetItems}`,
   };
 
   onMount(() => {
