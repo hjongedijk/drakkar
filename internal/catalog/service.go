@@ -452,7 +452,7 @@ func (s *Service) tvCards(ctx context.Context) ([]MediaCard, error) {
 			availableEpisodes int
 			queueRank         int
 		)
-		item.MediaType = "episode"
+		item.MediaType = "tv"
 		if err := rows.Scan(
 			&item.ID,
 			&item.TVShowID,
@@ -836,7 +836,7 @@ func (s *Service) buildTVSeasons(ctx context.Context, detail LibraryDetail) ([]S
 		available[key] = showEpisodeRow{
 			SeasonNumber:  season,
 			EpisodeNumber: episode,
-			Available:     true,
+			Available:     false,
 		}
 	}
 	if s.tmdb == nil || !s.tmdb.Enabled() || detail.TMDBID <= 0 {

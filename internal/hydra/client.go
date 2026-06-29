@@ -209,12 +209,17 @@ func (c *Client) throttle(ctx context.Context) error {
 	if next.Before(now) {
 		next = now
 	}
+	prev := c.lastCall
 	c.lastCall = next
 	c.rateMu.Unlock()
 	wait := time.Until(next)
 	if wait > 0 {
 		select {
 		case <-ctx.Done():
+			// Revert lastCall so the next call isn't penalised for a cancelled wait.
+			c.rateMu.Lock()
+			c.lastCall = prev
+			c.rateMu.Unlock()
 			return ctx.Err()
 		case <-time.After(wait):
 		}

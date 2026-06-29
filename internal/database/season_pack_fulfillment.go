@@ -280,9 +280,16 @@ func (db *DB) FulfillEpisodeLibraryItem(ctx context.Context, libraryItemID, sour
 		ON CONFLICT DO NOTHING
 		RETURNING id`, releaseCandidateID, libraryItemID).Scan(&newSelectedReleaseID)
 	if err != nil || newSelectedReleaseID == 0 {
-		// Already selected — just mark available.
-		_ = tx.Commit()
-		return db.markLibraryItemAvailable(ctx, libraryItemID)
+		// Already selected — run available updates within the open transaction.
+		_, err = tx.ExecContext(ctx, `UPDATE library_items SET available = true WHERE id = $1`, libraryItemID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE queue_items SET state = 'available', updated_at = now() WHERE library_item_id = $1 AND state != 'available'`, libraryItemID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 
 	// Update the virtual file to also reference this selected release.

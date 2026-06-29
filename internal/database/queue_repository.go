@@ -630,7 +630,7 @@ func filterImportedByPatterns(imported ImportedNZB, patterns []string) ImportedN
 		return imported
 	}
 	filtered := imported
-	filtered.Files = filtered.Files[:0]
+	filtered.Files = make([]ImportedNZBFile, 0, len(imported.Files))
 	filtered.Archives = nil
 	filtered.FileCount = 0
 	filtered.SegmentCount = 0
@@ -694,8 +694,7 @@ func (db *DB) ResetStuckQueueItems(ctx context.Context) (int, error) {
 			state = $1,
 			failure_reason = 'interrupted_by_restart',
 			updated_at = now()
-		WHERE state IN ($2, $3, $4, $5, $6, $7, $8)
-		  AND state != $1`,
+		WHERE state IN ($2, $3, $4, $5, $6, $7, $8)`,
 		QueueFailed,
 		QueueFetchingNZB, QueueIndexing, QueuePublishing,
 		QueuePreflight, QueueSearching, QueueRanking, QueueSelected,

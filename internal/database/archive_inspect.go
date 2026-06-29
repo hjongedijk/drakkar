@@ -828,7 +828,7 @@ func inspectRAR4(raw []byte) ([]ImportedArchiveEntry, error) {
 					return nil, errArchiveCompressionUnsupported
 				}
 			}
-			offset += headSize + int(packedSize)
+			offset += headSize + int(packedSize) //nolint:gosec // packedSize fits int on all supported platforms
 			continue
 		case 0x7b:
 			offset = len(raw)
@@ -845,7 +845,7 @@ func inspectRAR4(raw []byte) ([]ImportedArchiveEntry, error) {
 	return entries, nil
 }
 
-func parseRAR4FileHeader(body []byte, headFlags, mainFlags uint16, dataOffset int64) (ImportedArchiveEntry, uint32, error) {
+func parseRAR4FileHeader(body []byte, headFlags, mainFlags uint16, dataOffset int64) (ImportedArchiveEntry, int64, error) {
 	if len(body) < 25 {
 		return ImportedArchiveEntry{}, 0, errArchiveHeadersInvalid
 	}
@@ -877,7 +877,7 @@ func parseRAR4FileHeader(body []byte, headFlags, mainFlags uint16, dataOffset in
 		Solid:             mainFlags&0x0008 != 0,
 		VolumeIndex:       0,
 		ArchiveOffset:     dataOffset,
-	}, uint32(packedSize), nil
+	}, int64(packedSize), nil
 }
 
 func assignArchiveRanges(entries []ImportedArchiveEntry, volumeSizes map[int]int64, volumeDataOffsets map[int]int64) {

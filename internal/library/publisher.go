@@ -264,8 +264,9 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 
 	for _, m := range matches {
 		vf, ok := fileByEpisode[epKey{m.SeasonNumber, m.EpisodeNumber}]
-		if !ok {
-			vf.VirtualFileID = m.VirtualFileID
+		virtualFileID := m.VirtualFileID
+		if ok {
+			virtualFileID = vf.VirtualFileID
 		}
 		// Prefer the file path from fileByEpisode (ordered by vf.path, so deterministic
 		// and alphabetically last — proper "ShowName.SxxExx.Title.mkv" files sort after
@@ -280,7 +281,7 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 		// Publish the host symlink for this episode using its proper library item metadata.
 		// We reuse the existing virtual file — no new NNTP fetching needed.
 		enriched := database.ReleaseVirtualFile{
-			VirtualFileID:     vf.VirtualFileID,
+			VirtualFileID:     virtualFileID,
 			SelectedReleaseID: selectedReleaseID,
 			LibraryItemID:     m.LibraryItemID,
 			MediaType:         "episode",
@@ -302,12 +303,12 @@ func (p *Publisher) fulfillSeasonPackEpisodes(ctx context.Context, selectedRelea
 		libraryPath := p.libraryPathFor(enriched)
 		if libraryPath != "" {
 			if symlinkErr := p.syml.Publish(libraryPath, target); symlinkErr == nil {
-				if upsertErr := p.repo.UpsertSymlinkPublication(ctx, m.LibraryItemID, m.VirtualFileID, libraryPath, target); upsertErr == nil {
+				if upsertErr := p.repo.UpsertSymlinkPublication(ctx, m.LibraryItemID, virtualFileID, libraryPath, target); upsertErr == nil {
 					_ = p.rclone.RefreshPath(ctx, filepath.Dir(libraryPath))
 				}
 			}
 		}
-		_ = p.repo.FulfillEpisodeLibraryItem(ctx, m.LibraryItemID, selectedReleaseID, m.VirtualFileID)
+		_ = p.repo.FulfillEpisodeLibraryItem(ctx, m.LibraryItemID, selectedReleaseID, virtualFileID)
 		slog.Debug("season pack: fulfilled episode",
 			"library_item_id", m.LibraryItemID,
 			"season", m.SeasonNumber, "episode", m.EpisodeNumber,

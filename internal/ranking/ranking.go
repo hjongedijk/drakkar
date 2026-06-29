@@ -922,9 +922,13 @@ func matchYear(title string, requiredYear int) yearMatch {
 	// mismatch on the first token was wrong for titles that start with a
 	// year (e.g. "2001: A Space Odyssey" or "1917"), where the title year
 	// would be checked before the release year further in the string.
+	//
+	// If the only non-matching year token is the first token, it is most
+	// likely the movie title itself (e.g. "1917", "2001", "2012") rather than
+	// a release year stamp — return unknown rather than hard-reject.
 	tokens := strings.Fields(normalizeText(title))
-	foundNonMatch := false
-	for _, token := range tokens {
+	var nonMatchPositions []int
+	for i, token := range tokens {
 		if len(token) != 4 {
 			continue
 		}
@@ -935,12 +939,15 @@ func matchYear(title string, requiredYear int) yearMatch {
 		if year == requiredYear {
 			return yearExact
 		}
-		foundNonMatch = true
+		nonMatchPositions = append(nonMatchPositions, i)
 	}
-	if foundNonMatch {
-		return yearMismatch
+	if len(nonMatchPositions) == 0 {
+		return yearUnknown
 	}
-	return yearUnknown
+	if len(nonMatchPositions) == 1 && nonMatchPositions[0] == 0 {
+		return yearUnknown
+	}
+	return yearMismatch
 }
 
 func matchEpisode(title string, seasonNumber, episodeNumber int) episodeMatch {
@@ -963,8 +970,14 @@ func matchEpisode(title string, seasonNumber, episodeNumber int) episodeMatch {
 		fmt.Sprintf("s%02d", seasonNumber),
 	}
 	for _, token := range seasonTokens {
-		if strings.Contains(title, token) && (strings.Contains(title, "complete") || strings.Contains(title, "pack")) {
-			return episodeSeasonPack
+		if strings.Contains(title, token) {
+			// Bare season token with no SxxExx following it → season pack.
+			if !containsEpisodeToken(title) {
+				return episodeSeasonPack
+			}
+			if strings.Contains(title, "complete") || strings.Contains(title, "pack") {
+				return episodeSeasonPack
+			}
 		}
 	}
 	if containsEpisodeToken(title) {
@@ -976,10 +989,10 @@ func matchEpisode(title string, seasonNumber, episodeNumber int) episodeMatch {
 func containsEpisodeToken(title string) bool {
 	title = strings.ToLower(title)
 	for season := 1; season <= 40; season++ {
-		if strings.Contains(title, fmt.Sprintf("s%02d", season)) {
-			return true
-		}
 		for episode := 1; episode <= 99; episode++ {
+			if strings.Contains(title, fmt.Sprintf("s%02de%02d", season, episode)) {
+				return true
+			}
 			if strings.Contains(title, fmt.Sprintf("%dx%02d", season, episode)) {
 				return true
 			}

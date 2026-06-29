@@ -2,6 +2,8 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 )
 
@@ -255,20 +257,28 @@ func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error
 	rows, err := db.SQL.QueryContext(ctx, `
 		select li.id
 		from library_items li
+		left join episodes ep on ep.id = li.episode_id
 		where li.available = true
 		  and li.media_type != 'manual_nzb'
 		  and not exists (
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
 		  )
-		  -- No parseable VF via own selected_release (SxxExx pattern required).
+		  -- No parseable VF for the correct season via own selected_release.
+		  -- Season-aware: a S18 pack wrongly assigned to a S01 item does not count.
 		  and not exists (
 		      select 1 from selected_releases sr
 		      join virtual_files vf on vf.selected_release_id = sr.id
 		      where sr.library_item_id = li.id
-		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
+		      and (
+		          ep.season_number is null
+		          or (' ' || vf.file_name || ' ') ~* (
+		              '[^a-z]s' || lpad(ep.season_number::text, 2, '0') || 'e[0-9]{1,3}[^0-9]'
+		          )
+		      )
+		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s[0-9]{1,2}e[0-9]{1,3}[^0-9]'
 		  )
-		  -- No parseable VF via season-pack selected_release.
+		  -- No parseable VF for the correct season via season-pack selected_release.
 		  and not exists (
 		      select 1 from selected_releases ep_sr
 		      join selected_releases pack_sr
@@ -276,7 +286,13 @@ func (db *DB) ListUnrecoverableLibraryItems(ctx context.Context) ([]int64, error
 		       and pack_sr.library_item_id != li.id
 		      join virtual_files vf on vf.selected_release_id = pack_sr.id
 		      where ep_sr.library_item_id = li.id
-		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s\d{1,2}e\d{1,3}[^0-9]'
+		      and (
+		          ep.season_number is null
+		          or (' ' || vf.file_name || ' ') ~* (
+		              '[^a-z]s' || lpad(ep.season_number::text, 2, '0') || 'e[0-9]{1,3}[^0-9]'
+		          )
+		      )
+		      and (' ' || vf.file_name || ' ') ~* '[^a-z]s[0-9]{1,2}e[0-9]{1,3}[^0-9]'
 		  )
 		order by li.id asc`)
 	if err != nil {
@@ -333,10 +349,10 @@ func (db *DB) FindSourceSelectedReleaseForItem(ctx context.Context, libraryItemI
 		join virtual_files vf on vf.selected_release_id = pack_sr.id
 		where ep_sr.library_item_id = $1
 		limit 1`, libraryItemID).Scan(&id)
-	if err != nil {
-		return 0, nil // not found is not an error
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
 	}
-	return id, nil
+	return id, err
 }
 
 func (db *DB) ListPendingRepublishTargets(ctx context.Context) ([]PendingRepublishTarget, error) {

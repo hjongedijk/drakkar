@@ -93,9 +93,15 @@ func (c *ArticleClient) NewSession(ctx context.Context) (BodySession, error) {
 				conn.Close()
 				return nil, err
 			}
-			if _, _, err := readStatusLine(session.reader); err != nil {
+			var passCode int
+			passCode, _, err = readStatusLine(session.reader)
+			if err != nil {
 				conn.Close()
 				return nil, err
+			}
+			if passCode != 281 {
+				conn.Close()
+				return nil, fmt.Errorf("NNTP authentication failed (code %d)", passCode)
 			}
 		}
 	}

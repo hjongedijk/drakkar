@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ func (db *DB) HealthSummary(ctx context.Context) (HealthSummary, error) {
 	}
 	// Count library items marked available but with no published symlink.
 	// Exclude manual_nzb imports — they have no episode metadata and can never produce a library path.
-	_ = db.SQL.QueryRowContext(ctx, `
+	if err = db.SQL.QueryRowContext(ctx, `
 		select count(*)
 		from library_items li
 		where li.available = true
@@ -170,9 +171,13 @@ func (db *DB) HealthSummary(ctx context.Context) (HealthSummary, error) {
 		  and not exists (
 		      select 1 from symlink_publications sp
 		      where sp.library_item_id = li.id
-		  )`).Scan(&s.ConsistencyIssues)
-	_ = db.SQL.QueryRowContext(ctx, `
-		select count(*) from nzb_files where calibrated_at is null`).Scan(&s.UncalibratedNZBFiles)
+		  )`).Scan(&s.ConsistencyIssues); err != nil {
+		slog.Warn("health summary: consistency issues count failed", "error", err)
+	}
+	if err = db.SQL.QueryRowContext(ctx, `
+		select count(*) from nzb_files where calibrated_at is null`).Scan(&s.UncalibratedNZBFiles); err != nil {
+		slog.Warn("health summary: uncalibrated NZB files count failed", "error", err)
+	}
 	return s, nil
 }
 

@@ -625,24 +625,33 @@ func (h *uploadHandle) commit(ctx context.Context) error {
 		h.node.mu.Unlock()
 		return errAlreadyImported
 	}
+	// Mark imported while holding the lock to prevent a concurrent Flush
+	// from also calling ImportNZBPath (TOCTOU). Reset on failure.
+	h.node.imported = true
 	h.node.mu.Unlock()
 
 	if err := h.file.Sync(); err != nil {
+		h.node.mu.Lock()
+		h.node.imported = false
+		h.node.mu.Unlock()
 		return err
 	}
 	if _, err := h.file.Seek(0, 0); err != nil {
+		h.node.mu.Lock()
+		h.node.imported = false
+		h.node.mu.Unlock()
 		return err
 	}
 	if _, err := h.node.dir.provider.ImportNZBPath(ctx, h.node.name, h.node.path); err != nil {
+		h.node.mu.Lock()
+		h.node.imported = false
+		h.node.mu.Unlock()
 		if errors.Is(err, syscall.ENOSPC) {
 			return err
 		}
 		return err
 	}
 
-	h.node.mu.Lock()
-	h.node.imported = true
-	h.node.mu.Unlock()
 	_ = os.Remove(h.node.path)
 	if h.node.dir != nil {
 		h.node.dir.RmChild(h.node.name)

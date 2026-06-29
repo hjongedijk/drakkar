@@ -123,8 +123,12 @@ func Classify(reason string) FailureKey {
 		strings.Contains(r, "no_releases"):
 		return KeyNoReleaseFound
 
-	// "all_candidates" must be checked before "wrong_title" — the compound
-	// reason "all_candidates_wrong_title" contains "wrong_title" as a substring.
+	// "all_candidates_bad_source" must be checked before "all_candidates" and
+	// "bad_source" — it contains both as substrings and needs its own routing.
+	// "all_candidates" must be checked before "wrong_title" for the same reason.
+	case strings.Contains(r, "all_candidates_bad_source"):
+		return KeyBadSource
+
 	case strings.Contains(r, "all_candidates"):
 		return KeyAllCandidatesRejected
 
@@ -132,8 +136,7 @@ func Classify(reason string) FailureKey {
 		strings.Contains(r, "wrong title"):
 		return KeyWrongTitle
 
-	case strings.Contains(r, "bad_source") ||
-		strings.Contains(r, "all_candidates_bad_source"):
+	case strings.Contains(r, "bad_source"):
 		return KeyBadSource
 
 	case strings.Contains(r, "interrupted_by_restart") ||

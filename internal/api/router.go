@@ -1356,6 +1356,11 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 			respondError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if result.SelectedReleaseID == nil && result.Action == "selected" {
+			// Candidate was replaced by a newer search — tell the client to refresh.
+			respondError(w, http.StatusGone, errors.New("release candidate no longer available — please refresh and try again"))
+			return
+		}
 		publishMutation("release.select", map[string]any{"releaseCandidateId": id, "selectedReleaseId": result.SelectedReleaseID})
 		respondJSON(w, http.StatusAccepted, result)
 	})
@@ -1816,6 +1821,10 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 	})
 	// Manual search — proxy a free-text Hydra query and return scored candidates.
 	r.Get("/api/search/manual", func(w http.ResponseWriter, r *http.Request) {
+		if workflowSvc == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
+			return
+		}
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		if q == "" {
 			respondJSON(w, http.StatusOK, map[string]any{"items": []any{}})
@@ -1831,6 +1840,10 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 
 	// Release calendar — upcoming releases from TMDB.
 	r.Get("/api/release-calendar", func(w http.ResponseWriter, r *http.Request) {
+		if catalogSvc == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("catalog unavailable"))
+			return
+		}
 		month := r.URL.Query().Get("month") // "YYYY-MM", defaults to current
 		entries, err := catalogSvc.ReleaseCalendar(r.Context(), month)
 		if err != nil {
@@ -1840,12 +1853,11 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		respondJSON(w, http.StatusOK, map[string]any{"entries": entries})
 	})
 
-	// Active VFS stream sessions.
-	r.Get("/api/streams", func(w http.ResponseWriter, r *http.Request) {
-		sessions := streamsProvider.ActiveSessions()
-		respondJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
-	})
 	r.Post("/api/streams/{sessionId}/stop", func(w http.ResponseWriter, r *http.Request) {
+		if streamsProvider == nil {
+			respondError(w, http.StatusNotImplemented, errors.New("streams unavailable"))
+			return
+		}
 		sessionID := chi.URLParam(r, "sessionId")
 		streamsProvider.Stop(sessionID)
 		respondJSON(w, http.StatusOK, map[string]any{"stopped": true})
@@ -2140,7 +2152,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, X-API-KEY")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

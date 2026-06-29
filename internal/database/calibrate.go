@@ -339,13 +339,14 @@ func (db *DB) rescaleFileSegments(ctx context.Context, nzbFileID, actualFirstSiz
 	defer tx.Rollback()
 
 	// Update the inline segment sizes stored in nzb_files.
+	// COALESCE guards against array_length returning NULL for an empty array.
 	var segmentCount int64
 	if err = tx.QueryRowContext(ctx, `
 		UPDATE nzb_files
 		SET decoded_segment_size = $2,
 		    last_decoded_size     = $3
 		WHERE id = $1
-		RETURNING array_length(message_ids, 1)`,
+		RETURNING COALESCE(array_length(message_ids, 1), 0)`,
 		nzbFileID, actualFirstSize, actualLastSize,
 	).Scan(&segmentCount); err != nil {
 		return err

@@ -1301,6 +1301,11 @@ func (db *DB) SelectReleaseCandidate(ctx context.Context, releaseCandidateID int
 		from release_candidates
 		where id = $1`, releaseCandidateID,
 	).Scan(&libraryItemID, &title, &externalURL, &indexerName, &sizeBytes, &postedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			err = nil
+			return nil, nil // candidate replaced by a newer search — treated as "already handled"
+		}
 		return nil, err
 	}
 
@@ -1669,6 +1674,8 @@ func (db *DB) RestoreRejectedReleaseCandidates(ctx context.Context, libraryItemI
 	if err = rows.Err(); err != nil {
 		return RejectedReleaseRestoreResult{}, err
 	}
+	// Close rows before any ExecContext to release the pgConn lock.
+	rows.Close()
 
 	if restored == 0 {
 		if err = tx.Commit(); err != nil {
@@ -1776,8 +1783,13 @@ func (db *DB) FailSelectedReleaseAndPromoteNext(ctx context.Context, selectedRel
 		insert into failed_releases (release_candidate_id, reason)
 		values ($1, $2)
 		on conflict do nothing`, releaseCandidateID, reason,
-	); err != nil && !isFKViolation(err) {
-		// FK violation = candidate was deleted by concurrent worker; safe to skip
+	); err != nil {
+		if isFKViolation(err) {
+			// Candidate was deleted by concurrent worker — nothing left to fail.
+			err = nil
+			_ = tx.Rollback()
+			return nil, nil
+		}
 		return nil, fmt.Errorf("fail/insert-fr (rc=%d): %w", releaseCandidateID, err)
 	}
 
