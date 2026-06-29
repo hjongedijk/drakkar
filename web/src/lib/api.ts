@@ -125,11 +125,9 @@ export const api = {
   },
   librarySearch: (query: string) => request<{ items: LibraryItem[] }>(`/api/library/search?q=${encodeURIComponent(query)}`),
   libraryDetail: (libraryItemID: number) => request<LibraryDetail>(`/api/library/${libraryItemID}/details`),
-  libraryMissing: () => request<{ items: LibraryItem[] }>('/api/library/missing'),
   releases: (libraryItemID: number) => request<{ items: ReleaseItem[] }>(`/api/releases/${libraryItemID}`),
   subtitles: (libraryItemID: number) => request<{ items: SubtitleFile[] }>(`/api/subtitles/${libraryItemID}`),
   subtitleCandidates: (libraryItemID: number) => request<{ items: SubtitleCandidate[] }>(`/api/subtitle-candidates/${libraryItemID}`),
-  blocklist: () => request<{ items: BlocklistItem[] }>('/api/blocklist?pageSize=1000'),
   blocklistPaged: (opts?: { page?: number; pageSize?: number; q?: string; reason?: string; sort?: string; dir?: string }) => {
     const p = new URLSearchParams();
     if (opts?.page) p.set('page', String(opts.page));

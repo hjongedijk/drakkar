@@ -550,15 +550,6 @@ func TestLibraryEndpoints(t *testing.T) {
 		t.Fatalf("unexpected releases body %s", releasesRec.Body.String())
 	}
 
-	missingReq := httptest.NewRequest(http.MethodGet, "/api/library/missing", nil)
-	missingRec := httptest.NewRecorder()
-	router.ServeHTTP(missingRec, missingReq)
-	if missingRec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", missingRec.Code)
-	}
-	if !strings.Contains(missingRec.Body.String(), `"available":false`) {
-		t.Fatalf("unexpected missing body %s", missingRec.Body.String())
-	}
 }
 
 func TestStatusFromConfigIncludesIntegrationReadiness(t *testing.T) {
@@ -707,7 +698,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	nzbHealthReq := httptest.NewRequest(http.MethodPost, "/api/maintenance/nzb-health-check", nil)
 	nzbHealthRec := httptest.NewRecorder()
 	router.ServeHTTP(nzbHealthRec, nzbHealthReq)
-	if nzbHealthRec.Code != http.StatusAccepted || !strings.Contains(nzbHealthRec.Body.String(), `"resetItems":2`) {
+	if nzbHealthRec.Code != http.StatusAccepted || !strings.Contains(nzbHealthRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected nzb health response %d %s", nzbHealthRec.Code, nzbHealthRec.Body.String())
 	}
 
@@ -770,7 +761,7 @@ func TestWorkflowEndpoints(t *testing.T) {
 	cacheReq := httptest.NewRequest(http.MethodPost, "/api/cache/prune", nil)
 	cacheRec := httptest.NewRecorder()
 	router.ServeHTTP(cacheRec, cacheReq)
-	if cacheRec.Code != http.StatusAccepted || !strings.Contains(cacheRec.Body.String(), `"deletedFiles":2`) {
+	if cacheRec.Code != http.StatusAccepted || !strings.Contains(cacheRec.Body.String(), `"queued":true`) {
 		t.Fatalf("unexpected cache response %d %s", cacheRec.Code, cacheRec.Body.String())
 	}
 

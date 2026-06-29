@@ -857,20 +857,7 @@ func Router(status StatusService, queue QueueService, workflowSvc WorkflowServic
 		}()
 		respondJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 	})
-	r.Get("/api/library/missing", func(w http.ResponseWriter, r *http.Request) {
-		items, err := queue.ListLibraryItems(r.Context())
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err)
-			return
-		}
-		missing := make([]database.LibraryItemSummary, 0, len(items))
-		for _, item := range items {
-			if !item.Available {
-				missing = append(missing, item)
-			}
-		}
-		respondJSON(w, http.StatusOK, map[string]any{"items": missing})
-	})
+
 	r.Post("/api/library/{id}/replacements", func(w http.ResponseWriter, r *http.Request) {
 		if workflowSvc == nil {
 			respondError(w, http.StatusNotImplemented, errors.New("workflow unavailable"))
@@ -2181,17 +2168,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func emptyList(key string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		respondJSON(w, http.StatusOK, map[string]any{key: []any{}})
-	}
-}
-
-func accepted(kind string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		respondJSON(w, http.StatusAccepted, map[string]any{"status": kind})
-	}
-}
 
 // libStatusPriority mirrors the frontend itemStatus/STATUS_ORDER for server-side sort:
 // 0=available, 1=partial, 2=active/unreleased, 3=missing/failed.
