@@ -30,10 +30,26 @@ type NZBSegment struct {
 	DecodedTo   int64  `xml:"-"`
 }
 
+// newznabError represents the Newznab API error response format:
+// <error code="100" description="Incorrect user credentials" />
+type newznabError struct {
+	XMLName     xml.Name `xml:"error"`
+	Code        string   `xml:"code,attr"`
+	Description string   `xml:"description,attr"`
+}
+
 func Parse(r io.Reader) (*Document, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("parse nzb xml: read body: %w", err)
+	}
 	var doc Document
-	dec := xml.NewDecoder(r)
-	if err := dec.Decode(&doc); err != nil {
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		// Check if it's a Newznab API error response rather than an NZB.
+		var apiErr newznabError
+		if xmlErr := xml.Unmarshal(data, &apiErr); xmlErr == nil && apiErr.Code != "" {
+			return nil, fmt.Errorf("indexer error %s: %s", apiErr.Code, apiErr.Description)
+		}
 		return nil, fmt.Errorf("parse nzb xml: %w", err)
 	}
 	for i := range doc.Files {

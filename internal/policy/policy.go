@@ -89,7 +89,8 @@ func Classify(reason string) FailureKey {
 		return KeyEncryptedArchive
 
 	case strings.Contains(r, "nzb_parse") ||
-		strings.Contains(r, "parse nzb"):
+		strings.Contains(r, "parse nzb") ||
+		strings.Contains(r, "indexer error"):
 		return KeyNZBParseFailed
 
 	// 403 = quota exhausted (common with NZBFinder) — retry when quota resets.
