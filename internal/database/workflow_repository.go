@@ -1958,17 +1958,19 @@ func isHardRejectReason(reason string) bool {
 		return true
 	}
 	// Missing/expired articles are permanent — NNTP doesn't bring them back.
+	// 430 = connection/transfer limit exceeded (throttle) — transient, NOT permanent.
 	if strings.Contains(r, "missing_articles") ||
 		strings.Contains(r, "nntp_article_unavailable") ||
 		strings.Contains(r, "article missing") ||
 		strings.Contains(r, "article not found") ||
-		strings.Contains(r, "crc mismatch") ||
-		strings.Contains(r, "430") {
+		strings.Contains(r, "crc mismatch") {
 		return true
 	}
-	// Any NZB fetch HTTP error except 403 (quota exhausted — provider-level, not
-	// URL-level) is treated as permanent for that specific URL.
-	return strings.Contains(r, "nzb fetch status") && !strings.Contains(r, "status 403")
+	// Any NZB fetch HTTP error except 403 (quota exhausted) and 429 (rate limit)
+	// is treated as permanent for that specific URL.
+	return strings.Contains(r, "nzb fetch status") &&
+		!strings.Contains(r, "status 403") &&
+		!strings.Contains(r, "status 429")
 }
 
 func shouldPersistBlocklistReason(reason string) bool {

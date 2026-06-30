@@ -101,8 +101,9 @@ func Classify(reason string) FailureKey {
 		strings.Contains(r, "indexer error"):
 		return KeyNZBParseFailed
 
-	// 403 = quota exhausted (common with NZBFinder) — retry when quota resets.
-	case strings.Contains(r, "status 403"):
+	// 403/429 = quota / rate limit exhausted — retry when quota resets.
+	case strings.Contains(r, "status 403") ||
+		strings.Contains(r, "status 429"):
 		return KeyNZBFetch403
 
 	// Other 4xx HTTP errors are permanent — blocklist immediately.
